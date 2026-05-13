@@ -1,0 +1,3 @@
+python MIT public
+https://github.com/austinbaccus/Forza-X360-IO.git
+https://github.com/skyslide22/blendermania-addon.git

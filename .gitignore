@@ -1,0 +1,18 @@
+vendor/
+working/
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.egg-info/
+
+# compiled lzxd_helper (built by release.sh from src/lzxd_helper.c)
+src/lzxd_helper
+src/lzxd_helper.exe
+*.o
+*.so
+*.dylib
+*.dll
+
+probes/
