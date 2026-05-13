@@ -1,0 +1,137 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        type: string
+      notes:
+        description: 'Release notes'
+        required: false
+        type: string
+        default: ''
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PROJECT_NAME: forzamania
+
+jobs:
+  build-windows:
+    # Native Windows runner so we get a real Win32 build of lzxd_helper +
+    # PyInstaller's --onefile produces a proper .exe (no cross-compile pain).
+    # Final artifact is intended to run on Windows or under Proton/Wine.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vendor/
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: vendor-windows-${{ hashFiles('download-deps.sh') }}
+
+      - name: Download deps (libmspack, Forza-X360-IO, blendermania-addon)
+        shell: bash
+        run: |
+          chmod +x ./download-deps.sh
+          ./download-deps.sh
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python build deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller numpy
+
+      - name: Build lzxd_helper.exe (mingw via the windows runner's bundled gcc)
+        shell: bash
+        run: |
+          # windows-latest ships mingw-w64 at /c/mingw64/bin or via the
+          # rtools/msys64 install. `gcc` should be on PATH.
+          which gcc || { echo "gcc not on PATH" >&2; exit 1; }
+          MSPACK="vendor/libmspack/libmspack/mspack"
+          gcc -O2 -Wall \
+              -I"$MSPACK" \
+              -o src/lzxd_helper.exe \
+              src/lzxd_helper.c \
+              "$MSPACK/lzxd.c" \
+              "$MSPACK/system.c"
+          ls -la src/lzxd_helper.exe
+
+      - name: PyInstaller bundle
+        shell: bash
+        run: |
+          # --onefile: single .exe. --windowed: no console behind the Tk window.
+          # --add-binary: ship lzxd_helper.exe inside the bundle (extracted to
+          #   sys._MEIPASS at runtime; lzx.py's helper_path() looks there first).
+          # --add-data: ship vendor/Forza-X360-IO source (read at import time
+          #   by src/fm4/_vendor_setup.py) + scripts/blender_export.py (called
+          #   via subprocess against the user's Blender install).
+          pyinstaller \
+              --clean --noconfirm \
+              --onefile \
+              --windowed \
+              --name forzamania \
+              --paths src \
+              --add-binary "src/lzxd_helper.exe;." \
+              --add-data "vendor/Forza-X360-IO/src/forza_blender;vendor/Forza-X360-IO/src/forza_blender" \
+              --add-data "vendor/blendermania-addon/assets/materials/materials-map-trackmania2020_18122023.json;vendor/blendermania-addon/assets/materials" \
+              --add-data "scripts/blender_export.py;scripts" \
+              --add-data "assets;assets" \
+              --collect-submodules numpy \
+              src/main.py
+
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          mkdir -p dist-stage
+          cp dist/forzamania.exe dist-stage/
+          [ -f README.md ] && cp README.md dist-stage/
+          [ -f LICENSE ] && cp LICENSE dist-stage/
+          # Empty subfolder hint for users to drop NadeoImporter/Blendermania_Dotnet
+          # into if they don't want to use the Download buttons.
+          mkdir -p "dist-stage/forzamania-tools"
+          echo "Drop NadeoImporter.exe and Blendermania_Dotnet.exe here, or use Settings → Download buttons in the app." > "dist-stage/forzamania-tools/README.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: dist-stage
+
+  release:
+    needs: [build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-zip
+          path: windows-zip
+
+      - name: Package
+        run: |
+          (cd windows-zip && zip -r "../${PROJECT_NAME}-${{ inputs.version }}-windows.zip" .)
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRERELEASE_FLAG=""
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          gh release create "${{ inputs.version }}" \
+              "${PROJECT_NAME}-${{ inputs.version }}-windows.zip" \
+              --title "${{ inputs.version }}" \
+              --notes "${{ inputs.notes }}" \
+              $PRERELEASE_FLAG
