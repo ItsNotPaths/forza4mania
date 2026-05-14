@@ -305,7 +305,17 @@ class ConvertTab:
             try:
                 export_chunk_to_fbx(json_path, blender, export_script, timeout=900.0)
             except Exception as e:
-                log(f"      [!] export failed: {e}")
+                log(f"      [!] export failed: {type(e).__name__}: {e}")
+                # Full traceback for the FIRST failure of the run only — past
+                # that, the cause is almost certainly the same and we don't
+                # want to spam the log with 119 identical stacks.
+                if not getattr(self, "_logged_first_export_traceback", False):
+                    import traceback
+                    log("      ---- traceback ----")
+                    for tb_line in traceback.format_exc().splitlines():
+                        log(f"      {tb_line}")
+                    log("      ---- end traceback ----")
+                    self._logged_first_export_traceback = True
                 continue
             fbx_paths.append(fbx_path)
 

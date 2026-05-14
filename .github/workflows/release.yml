@@ -79,7 +79,14 @@ jobs:
       - name: PyInstaller bundle
         shell: bash
         run: |
-          # --onefile: single .exe. --windowed: no console behind the Tk window.
+          # --onefile: single .exe.
+          # --console (intentionally NOT --windowed): under PyInstaller
+          #   --windowed on Windows, the parent process has no console so its
+          #   stdio handles are NULL. Even with the full subprocess hardening
+          #   (stdin=DEVNULL + STARTF_USESHOWWINDOW + CREATE_NO_WINDOW) we
+          #   still hit "WinError 6 Invalid handle" under Wine when spawning
+          #   Blender. --console gives the parent real handles, sidesteps the
+          #   issue, and as a bonus shows live stdout in a terminal.
           # --add-binary: ship lzxd_helper.exe inside the bundle (extracted to
           #   sys._MEIPASS at runtime; lzx.py's helper_path() looks there first).
           # --add-data: ship vendor/Forza-X360-IO source (read at import time
@@ -88,7 +95,7 @@ jobs:
           pyinstaller \
               --clean --noconfirm \
               --onefile \
-              --windowed \
+              --console \
               --name forzamania \
               --paths src \
               --add-binary "src/lzxd_helper.exe;." \
