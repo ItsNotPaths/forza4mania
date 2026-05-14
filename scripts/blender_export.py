@@ -208,20 +208,37 @@ def main() -> int:
         return 2
 
     chunk = json.loads(chunk_path.read_text())
-    out_fbx = Path(chunk["out_fbx"])
+
+    # Two output modes: normal pipeline writes an FBX per chunk; the
+    # diagnostic "full blend" mode (chunk JSON carries "out_blend" instead
+    # of "out_fbx") saves a .blend of the whole consolidated mesh so the
+    # geometry can be inspected directly, upstream of NadeoImporter.
+    out_blend = chunk.get("out_blend")
+    out_fbx = chunk.get("out_fbx")
 
     _wipe_scene()
     _enable_fbx()
 
-    chunk_name = Path(chunk["out_fbx"]).stem
+    chunk_name = Path(out_blend or out_fbx).stem
     obj = _build_consolidated_mesh(chunk_name, chunk)
     instance_count = sum(len(inst["mesh_keys"]) for inst in chunk["instances"])
     mesh_count = len(chunk["meshes"])
 
-    # FBX export — stock Blender exporter, no addon required
-    out_fbx.parent.mkdir(parents=True, exist_ok=True)
+    if out_blend:
+        out_path = Path(out_blend)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        bpy.ops.wm.save_as_mainfile(filepath=str(out_path))
+        print(
+            f"OK: wrote {out_path} ({instance_count} placements of {mesh_count} "
+            f"unique meshes, {len(obj.data.vertices)} verts, "
+            f"{len(obj.data.polygons)} polys)"
+        )
+        return 0
+
+    out_fbx_path = Path(out_fbx)
+    out_fbx_path.parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.export_scene.fbx(
-        filepath=str(out_fbx),
+        filepath=str(out_fbx_path),
         check_existing=False,
         use_selection=False,
         use_visible=False,
@@ -245,7 +262,7 @@ def main() -> int:
     )
 
     print(
-        f"OK: wrote {out_fbx} ({instance_count} placements of {mesh_count} unique "
+        f"OK: wrote {out_fbx_path} ({instance_count} placements of {mesh_count} unique "
         f"meshes baked into 1 consolidated mesh, "
         f"{len(obj.data.vertices)} verts, {len(obj.data.polygons)} polys)"
     )
