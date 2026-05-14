@@ -127,8 +127,12 @@ def export_chunk_to_fbx(
         "--",
         str(chunk_json),
     ]
+    # stdin=DEVNULL: under PyInstaller --windowed on Windows, the parent
+    # has no console so its stdin handle is invalid; subprocess inheriting
+    # it fails with WinError 6. Explicitly nulling stdin avoids that.
     result = subprocess.run(
         cmd,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=timeout,

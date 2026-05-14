@@ -107,7 +107,15 @@ def run_dotnet_command(
     """
     arg = to_wine_path(config_path) if linux_mode else str(config_path)
     cmd = list(wine_cmd or []) + [str(dotnet_exe), command, arg]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # stdin=DEVNULL: see nadeo_runner._run for rationale (PyInstaller
+    # --windowed parent has no valid stdin handle, inheriting raises
+    # WinError 6).
+    proc = subprocess.run(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
     return DotnetResult(
         command=command,
         returncode=proc.returncode,

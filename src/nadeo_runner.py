@@ -89,7 +89,15 @@ def to_wine_path(p: Path | str) -> str:
 
 
 def _run(cmd: list[str], cwd: Path | None) -> tuple[int, str, str]:
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    # stdin=DEVNULL: under PyInstaller --windowed the parent's stdin is
+    # an invalid handle and subprocess inheriting it raises WinError 6.
+    proc = subprocess.run(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+    )
     return proc.returncode, proc.stdout, proc.stderr
 
 
