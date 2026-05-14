@@ -57,17 +57,26 @@ def _transform_verts(verts: list[list[float]], xform: Matrix) -> list[tuple[floa
     return out
 
 
-def _build_consolidated_mesh(name: str, chunk: dict) -> bpy.types.Object:
+def _build_consolidated_mesh(name: str, chunk: dict) -> tuple[bpy.types.Object, tuple[float, float, float]]:
     """Build ONE mesh per chunk by baking every instance's transformed
-    geometry into a single vertex/face buffer.
+    geometry into a single vertex/face buffer, then RE-CENTER that buffer
+    on its own bounding-box centre.
 
-    Why not share mesh datablocks across objects? Blender 5.1's FBX exporter
-    emits "Cannot register a valid material index ... different objects
-    using the same mesh, but different material slots layouts" warnings
-    even when slots are identical, and produces an FBX that Blender's own
-    importer crashes on. Consolidating sidesteps the entire issue at the
-    cost of larger per-chunk vertex counts (the chunker already capped these
-    to NadeoImporter-friendly sizes).
+    Returns (object, world_center). The world_center is the bbox centre in
+    TM-space *before* re-centering — the caller uses it as the item's
+    placement position in the map, so the item renders back at its true
+    world location.
+
+    Why re-center? TM2020 items must be LOCAL-space geometry (verts around
+    the origin), then placed at a world position. Baking absolute world
+    coordinates into the item mesh produces verts hundreds of metres
+    off-origin; TM2020 silently rejects those items as invalid ("missing
+    item"). Centering makes every item a well-formed local object.
+
+    Why consolidate at all (not share mesh datablocks)? Blender 5.1's FBX
+    exporter emits "different objects using the same mesh, different
+    material slot layouts" warnings and produces an FBX its own importer
+    crashes on. Consolidating sidesteps that.
     """
     all_verts: list[tuple[float, float, float]] = []
     all_faces: list[tuple[int, int, int]] = []
@@ -104,6 +113,19 @@ def _build_consolidated_mesh(name: str, chunk: dict) -> bpy.types.Object:
                 local_mat = m["material_per_face"][f_i] if f_i < len(m["material_per_face"]) else 0
                 all_mat_per_face.append(local_to_global_mat[local_mat] if local_mat < len(local_to_global_mat) else 0)
 
+    # Re-center: compute the bbox centre, subtract it from every vertex.
+    if all_verts:
+        xs = [v[0] for v in all_verts]
+        ys = [v[1] for v in all_verts]
+        zs = [v[2] for v in all_verts]
+        cx = (min(xs) + max(xs)) * 0.5
+        cy = (min(ys) + max(ys)) * 0.5
+        cz = (min(zs) + max(zs)) * 0.5
+        all_verts = [(v[0] - cx, v[1] - cy, v[2] - cz) for v in all_verts]
+    else:
+        cx = cy = cz = 0.0
+    world_center = (cx, cy, cz)
+
     mesh = bpy.data.meshes.new(name=name)
     mesh.from_pydata(all_verts, [], all_faces)
     mesh.update()
@@ -128,7 +150,7 @@ def _build_consolidated_mesh(name: str, chunk: dict) -> bpy.types.Object:
     bpy.context.scene.collection.objects.link(obj)
 
     _add_lightmap_uv(obj)
-    return obj
+    return obj, world_center
 
 
 def _add_lightmap_uv(obj: bpy.types.Object) -> None:
@@ -220,7 +242,7 @@ def main() -> int:
     _enable_fbx()
 
     chunk_name = Path(out_blend or out_fbx).stem
-    obj = _build_consolidated_mesh(chunk_name, chunk)
+    obj, world_center = _build_consolidated_mesh(chunk_name, chunk)
     instance_count = sum(len(inst["mesh_keys"]) for inst in chunk["instances"])
     mesh_count = len(chunk["meshes"])
 
@@ -237,6 +259,13 @@ def main() -> int:
 
     out_fbx_path = Path(out_fbx)
     out_fbx_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Sidecar: the bbox centre we re-centred the mesh on. convert_tab reads
+    # this and uses it as the item's placement position in the composed
+    # map, so the (now local-space) item renders back at its true world
+    # location. JSON next to the FBX, same stem.
+    center_path = out_fbx_path.with_suffix(".center.json")
+    center_path.write_text(json.dumps({"center": list(world_center)}))
     bpy.ops.export_scene.fbx(
         filepath=str(out_fbx_path),
         check_existing=False,
