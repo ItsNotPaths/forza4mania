@@ -97,11 +97,32 @@ def _run(cmd: list[str], cwd: Path | None) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout, proc.stderr
 
 
+def _path_arg_for_importer(fbx_or_xml: Path, work_root: Path | None, linux_mode: bool) -> str:
+    """Compute the path NadeoImporter will accept.
+
+    NadeoImporter resolves its path argument relative to ``<userdir>/Work/``
+    and rejects absolute paths with "File not found in '{userdir}/Work/': ...".
+    When `work_root` (the absolute path to that Work/ dir) is supplied we
+    return the file's path relative to it, leading-slash prefixed:
+        Work/Items/Forzamania/Alps/X.fbx → /Items/Forzamania/Alps/X.fbx
+    Otherwise we fall back to the absolute form (handy for one-off CLI use
+    on real Windows where NadeoImporter sometimes accepts absolute paths).
+    """
+    if work_root is not None:
+        try:
+            rel = fbx_or_xml.relative_to(work_root).as_posix()
+            return "/" + rel
+        except ValueError:
+            pass
+    return to_wine_path(fbx_or_xml) if linux_mode else str(fbx_or_xml)
+
+
 def run_mesh(
     nadeo_importer: Path,
     fbx_path: Path,
     linux_mode: bool = False,
     wine_cmd: list[str] | None = None,
+    work_root: Path | None = None,
 ) -> NadeoImporterResult:
     """Run ``NadeoImporter.exe Mesh <fbx>`` and report the result.
 
@@ -109,11 +130,12 @@ def run_mesh(
     src/xml_writers.write_mesh_params first). Output: ``<fbx_stem>.Mesh.Gbx``
     and ``<fbx_stem>.Shape.Gbx`` next to the input.
 
-    On Linux, pass ``wine_cmd=["wine"]`` (or a Proton run command) and
-    ``linux_mode=True``.
+    `work_root` is the absolute path to the user dir's ``Work/`` folder. The
+    FBX must live inside it; we pass NadeoImporter the relative form
+    (``/Items/.../X.fbx``) which is what it actually accepts.
     """
     fbx = Path(fbx_path)
-    arg = to_wine_path(fbx) if linux_mode else str(fbx)
+    arg = _path_arg_for_importer(fbx, work_root, linux_mode)
     cmd = list(wine_cmd or []) + [str(nadeo_importer), "Mesh", arg]
     rc, out, err = _run(cmd, cwd=fbx.parent)
 
@@ -136,14 +158,18 @@ def run_item(
     item_xml_path: Path,
     linux_mode: bool = False,
     wine_cmd: list[str] | None = None,
+    work_root: Path | None = None,
 ) -> NadeoImporterResult:
     """Run ``NadeoImporter.exe Item <item.xml>`` and report the result.
 
     Expects ``<stem>.Mesh.Gbx`` (from a prior run_mesh call) to exist.
     Output: ``<stem>.Item.Gbx`` next to the input.
+
+    See `run_mesh` for the `work_root` rationale (NadeoImporter wants
+    paths relative to <userdir>/Work/, not absolute).
     """
     xml = Path(item_xml_path)
-    arg = to_wine_path(xml) if linux_mode else str(xml)
+    arg = _path_arg_for_importer(xml, work_root, linux_mode)
     cmd = list(wine_cmd or []) + [str(nadeo_importer), "Item", arg]
     rc, out, err = _run(cmd, cwd=xml.parent)
 
@@ -165,13 +191,14 @@ def convert_chunk(
     fbx_path: Path,
     linux_mode: bool = False,
     wine_cmd: list[str] | None = None,
+    work_root: Path | None = None,
 ) -> tuple[NadeoImporterResult, NadeoImporterResult]:
     """End-to-end convenience: Mesh step then Item step.
 
     Returns both results so callers can surface whichever step failed.
     Stops at the Item step if Mesh failed.
     """
-    mesh_result = run_mesh(nadeo_importer, fbx_path, linux_mode, wine_cmd)
+    mesh_result = run_mesh(nadeo_importer, fbx_path, linux_mode, wine_cmd, work_root=work_root)
     if not mesh_result.ok:
         return mesh_result, NadeoImporterResult(
             kind="Item", returncode=-1, stdout="", stderr="(skipped: mesh step failed)",
@@ -179,5 +206,5 @@ def convert_chunk(
         )
 
     item_xml = Path(fbx_path).with_suffix(".Item.xml")
-    item_result = run_item(nadeo_importer, item_xml, linux_mode, wine_cmd)
+    item_result = run_item(nadeo_importer, item_xml, linux_mode, wine_cmd, work_root=work_root)
     return mesh_result, item_result

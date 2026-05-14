@@ -256,8 +256,16 @@ class ConvertTab:
 
         ribbon_dir = track_dir / ribbon
         out_root = Path(self.app.settings.tm_user_dir or str(Path.home() / "forzamania-out"))
+        # Intermediate: FBX + XML + textures live inside <userdir>/Work/...
+        # because NadeoImporter resolves its path argument relative to that
+        # Work/ dir. Final .Item.Gbx gets moved to <userdir>/Items/... after
+        # NadeoImporter runs (which is where TM2020 looks for them in the
+        # in-game item editor).
+        work_root = out_root / "Work"
+        work_items_root = work_root / "Items" / "Forzamania" / track_dir.name
         items_root = out_root / "Items" / "Forzamania" / track_dir.name
-        textures_root = items_root / "_Textures"
+        textures_root = work_items_root / "_Textures"
+        work_items_root.mkdir(parents=True, exist_ok=True)
         items_root.mkdir(parents=True, exist_ok=True)
 
         log = self.app.log
@@ -278,7 +286,7 @@ class ConvertTab:
         tex_paths = extract_track_textures(ir, textures_root)
         log(f"      {len(tex_paths)} dds files")
 
-        log(f"[4/6] FBX + XML for {len(chunks)} chunks → {items_root}")
+        log(f"[4/6] FBX + XML for {len(chunks)} chunks → {work_items_root}")
         try:
             blender = find_blender(
                 Path(self.app.settings.blender_path) if self.app.settings.blender_path else None
@@ -297,10 +305,10 @@ class ConvertTab:
             for mk in chunk.mesh_keys:
                 mesh = ir.meshes[mk]
                 for j, fm4_mat in enumerate(mesh.materials):
-                    mats[(mk, j)] = map_material(fm4_mat, chunk.name, j, tex_paths, items_root)
+                    mats[(mk, j)] = map_material(fm4_mat, chunk.name, j, tex_paths, work_items_root)
 
-            fbx_path = items_root / f"{chunk.name}.fbx"
-            json_path = items_root / f"{chunk.name}.chunk.json"
+            fbx_path = work_items_root / f"{chunk.name}.fbx"
+            json_path = work_items_root / f"{chunk.name}.chunk.json"
             dump_chunk(chunk, ir, mats, fbx_path, json_path)
             try:
                 export_chunk_to_fbx(json_path, blender, export_script, timeout=900.0)
@@ -408,16 +416,32 @@ class ConvertTab:
                 first_failure_logged = True
 
         for fbx in fbx_paths:
-            mesh_res, item_res = convert_chunk(importer, fbx, self.app.settings.linux_mode, wine_cmd)
+            mesh_res, item_res = convert_chunk(
+                importer, fbx, self.app.settings.linux_mode, wine_cmd,
+                work_root=work_root,
+            )
             if not mesh_res.ok:
                 _log_full("mesh step", fbx.name, mesh_res)
                 continue
             if not item_res.ok:
                 _log_full("item step", fbx.name, item_res)
                 continue
-            item_gbx = fbx.with_suffix(".Item.Gbx")
-            if item_gbx.is_file():
-                item_gbx_paths.append(item_gbx)
+            # NadeoImporter writes the .Item.Gbx (and .Mesh.Gbx, .Shape.Gbx)
+            # next to the FBX inside Work/. TM2020's in-game item editor
+            # only sees what's inside <userdir>/Items/, so move the final
+            # GBXs there. We keep the .fbx + xml in Work/ as the audit trail.
+            item_gbx_in_work = fbx.with_suffix(".Item.Gbx")
+            if not item_gbx_in_work.is_file():
+                continue
+            item_gbx_dst = items_root / item_gbx_in_work.name
+            try:
+                if item_gbx_dst.exists():
+                    item_gbx_dst.unlink()
+                item_gbx_in_work.rename(item_gbx_dst)
+            except OSError as e:
+                log(f"      [!] move {item_gbx_in_work.name} → Items/ failed: {e}")
+                continue
+            item_gbx_paths.append(item_gbx_dst)
 
         log(f"      {len(item_gbx_paths)} of {len(fbx_paths)} items converted")
 
