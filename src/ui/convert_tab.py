@@ -215,15 +215,62 @@ class ConvertTab:
         self.app.log(f"[ui] {s}")
 
     def _resolve_user_dir_from_nadeo_ini(self) -> Path | None:
-        """Parse Nadeo.ini's UserDir and expand the {userdocs} token.
+        """Resolve the TM2020 user dir, preferring a cross-prefix Wine path.
 
-        This guarantees our intermediate FBX/XML paths land in the same
-        physical dir NadeoImporter resolves them against — sidestepping
-        all the Wine-path-mangling pitfalls of trusting our own setting.
+        Cross-prefix problem: when forzamania.exe runs under Proton in its
+        own compatdata prefix, ``C:\\users\\steamuser\\Documents`` resolves
+        to that prefix's Documents — NOT to the TM2020 prefix where TM
+        actually reads its Maps/Items from. Writing there means TM never
+        sees our output.
+
+        Strategy:
+          1. Look at ``tm_install_dir`` and walk up to ``steamapps/``.
+          2. Scan ``steamapps/compatdata/*/pfx/drive_c/users/steamuser/
+             Documents/Trackmania`` for a real TM dir (must contain
+             ``Maps/`` to be the right one).
+          3. Express that as a ``Z:\\...`` path — Wine's Z: drive maps to
+             Linux ``/``, so the path is addressable from inside any
+             prefix (including our own forzamania prefix).
+          4. Fall back to Nadeo.ini's ``{userdocs}`` expansion if no
+             cross-prefix candidate is found.
         """
         tm_install = self.app.settings.tm_install_dir
         if not tm_install:
             return None
+
+        # Step 1-3: cross-prefix Z:\ path
+        tm_path = Path(tm_install.replace("\\", "/"))
+        # Strip "Z:" prefix if present so we can do path arithmetic
+        tm_str = str(tm_path)
+        if tm_str.startswith("Z:") or tm_str.startswith("z:"):
+            tm_str = tm_str[2:]
+        tm_path = Path(tm_str)
+
+        # Find the steamapps root
+        for ancestor in tm_path.parents:
+            if ancestor.name == "steamapps":
+                compatdata = ancestor / "compatdata"
+                if compatdata.is_dir():
+                    # Pick the TM2020 prefix that has a real Maps/ dir.
+                    # Most-recently-modified wins as a tiebreaker.
+                    candidates = []
+                    for entry in compatdata.iterdir():
+                        if not entry.is_dir():
+                            continue
+                        tm_user = (entry / "pfx" / "drive_c" / "users" /
+                                   "steamuser" / "Documents" / "Trackmania")
+                        if (tm_user / "Maps").is_dir():
+                            candidates.append((tm_user.stat().st_mtime, tm_user))
+                    if candidates:
+                        candidates.sort(reverse=True)
+                        chosen = candidates[0][1]
+                        if sys.platform == "win32":
+                            # Wine's Z: drive maps to Linux /
+                            return Path("Z:" + str(chosen).replace("/", "\\"))
+                        return chosen
+                break
+
+        # Step 4: Nadeo.ini fallback (single-prefix case, dev mode, etc.)
         ini_path = Path(tm_install) / "Nadeo.ini"
         if not ini_path.is_file():
             return None
@@ -234,19 +281,12 @@ class ConvertTab:
                     continue
                 _, _, raw = line.partition("=")
                 raw = raw.strip()
-                # {userdocs} → user's "My Documents". On Wine that's
-                # C:\users\steamuser\Documents (a Wine-side path that
-                # both we and NadeoImporter address the same way).
                 if "{userdocs}" in raw:
                     if sys.platform == "win32":
                         raw = raw.replace("{userdocs}", "C:\\users\\steamuser\\Documents")
                     else:
                         raw = raw.replace("{userdocs}", str(Path.home() / "Documents"))
                 resolved = Path(raw.replace("\\", "/"))
-                if resolved.is_dir():
-                    return resolved
-                # Fall back to the Wine prefix variant if a Windows-style
-                # path doesn't exist on Linux (dev mode).
                 return resolved
         except OSError:
             pass
