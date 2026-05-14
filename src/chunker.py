@@ -124,9 +124,15 @@ def chunk_track(
             nonlocal current_instances, current_keys, current_tris, sub
             if not current_instances:
                 return
+            # Encode signed coords with a letter prefix instead of -/+:
+            # n=negative, p=positive. TM2020 treats `-` and `+` as
+            # identifier delimiters and will report items with those chars
+            # as missing (the '-' before a digit gets eaten by the lookup).
+            tile_x = f"{'n' if bx < 0 else 'p'}{abs(bx):03d}"
+            tile_z = f"{'n' if bz < 0 else 'p'}{abs(bz):03d}"
             chunks.append(_finalize_chunk(
                 track,
-                f"{track.track_name}_Tile_{bx:+04d}_{bz:+04d}_{sub:02d}",
+                f"{track.track_name}_Tile_{tile_x}_{tile_z}_{sub:02d}",
                 current_instances,
                 current_keys,
                 current_tris,

@@ -238,18 +238,33 @@ class ConvertTab:
         if not tm_install:
             return None
 
-        # Step 1-3: cross-prefix Z:\ path
-        tm_path = Path(tm_install.replace("\\", "/"))
-        # Strip "Z:" prefix if present so we can do path arithmetic
-        tm_str = str(tm_path)
-        if tm_str.startswith("Z:") or tm_str.startswith("z:"):
-            tm_str = tm_str[2:]
-        tm_path = Path(tm_str)
+        # Normalize tm_install to a form whose .is_dir() will work under
+        # the current process's filesystem view. Three input shapes we see:
+        #   "Z:\run\media\paths\..."     — already addressable on Wine
+        #   "\run\media\paths\..."       — Wine treats as path on current
+        #                                  drive (usually C:); .is_dir()
+        #                                  fails. Prepend Z: so it works.
+        #   "/run/media/paths/..."       — Linux native, fine on Linux.
+        normalized = tm_install.replace("\\", "/")
+        if sys.platform == "win32" and normalized.startswith("/"):
+            # Wine: bare absolute Linux path → Z: drive
+            normalized = "Z:" + normalized
+        tm_path = Path(normalized)
+
+        # For path arithmetic (parents, name) we need the drive prefix
+        # OFF so the components include "steamapps" etc. as named parents.
+        arith_str = normalized
+        if arith_str[:2].lower() == "z:":
+            arith_str = arith_str[2:]
+        arith_path = Path(arith_str)
 
         # Find the steamapps root
-        for ancestor in tm_path.parents:
+        for ancestor in arith_path.parents:
             if ancestor.name == "steamapps":
+                # Re-attach Z: prefix for is_dir() if we're on Wine
                 compatdata = ancestor / "compatdata"
+                if sys.platform == "win32":
+                    compatdata = Path("Z:" + str(compatdata))
                 if compatdata.is_dir():
                     # Pick the TM2020 prefix that has a real Maps/ dir.
                     # Most-recently-modified wins as a tiebreaker.
@@ -264,9 +279,10 @@ class ConvertTab:
                     if candidates:
                         candidates.sort(reverse=True)
                         chosen = candidates[0][1]
-                        if sys.platform == "win32":
-                            # Wine's Z: drive maps to Linux /
-                            return Path("Z:" + str(chosen).replace("/", "\\"))
+                        # On Wine, return as a Z:\ path so it's addressable
+                        # from inside whatever prefix forzamania.exe lives in.
+                        # `chosen` already has the Z: prefix because
+                        # `compatdata` did — Path concatenation preserves it.
                         return chosen
                 break
 
