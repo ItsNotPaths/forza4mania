@@ -15,8 +15,16 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def _exe_dir() -> Path:
+    """Where forzamania.exe lives — Settings UI puts downloaded tools here."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 @dataclass
@@ -40,10 +48,10 @@ def find_nadeo_importer(
 
     Search order:
       1. Explicit override (Settings UI feeds this)
-      2. <TM install>/NadeoImporter.exe (canonical: blendermania-addon's
-         get_nadeo_importer_path() looks here too)
-      3. <TM install>/forzamania-tools/NadeoImporter.exe (where our downloader
-         puts it if the canonical slot was occupied/missing)
+      2. <forzamania.exe dir>/tools/NadeoImporter.exe (where the Download
+         button puts it — see ui/settings_tab.py:_tools_dir)
+      3. <TM install>/NadeoImporter.exe (canonical: blendermania-addon
+         expects this location too, so users with an existing install win)
     """
     if override is not None:
         p = Path(override)
@@ -51,11 +59,14 @@ def find_nadeo_importer(
             raise FileNotFoundError(f"NadeoImporter override does not exist: {p}")
         return p
 
+    cand = _exe_dir() / "tools" / "NadeoImporter.exe"
+    if cand.is_file():
+        return cand
+
     if tm_install_dir is not None:
-        for sub in (Path("NadeoImporter.exe"), Path("forzamania-tools/NadeoImporter.exe")):
-            cand = Path(tm_install_dir) / sub
-            if cand.is_file():
-                return cand
+        cand = Path(tm_install_dir) / "NadeoImporter.exe"
+        if cand.is_file():
+            return cand
 
     raise FileNotFoundError(
         "NadeoImporter.exe not found. Use the Download button in Settings, "

@@ -1,6 +1,8 @@
 """Settings tab — paths, modes, download buttons."""
 from __future__ import annotations
 
+import os
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -14,6 +16,19 @@ from external_downloader import (
 
 if TYPE_CHECKING:
     from ui.app import App
+
+
+def _exe_dir() -> Path:
+    """Where forzamania.exe (or the dev script) actually lives.
+
+    Under PyInstaller --onefile, ``sys.executable`` is the .exe — its parent
+    is the user's chosen install dir. (Avoid sys._MEIPASS: that's the temp
+    extraction dir which gets wiped on exit.)
+    In dev mode, fall back to the repo root via __file__.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent.parent
 
 
 _FIELDS = [
@@ -94,17 +109,19 @@ class SettingsTab:
         path = self.app.settings.save()
         self.app.log(f"[settings] saved to {path}")
 
-    def _tools_dir(self) -> Path | None:
-        tm = self.vars["tm_install_dir"].get().strip()
-        if not tm:
-            messagebox.showerror("forzamania", "Set TM2020 install dir first.")
-            return None
-        return Path(tm) / "forzamania-tools"
+    def _tools_dir(self) -> Path:
+        """Where downloaded helpers (NadeoImporter, dotnet) get extracted.
+
+        Lives next to forzamania.exe under ``./tools/``. Two reasons over
+        dropping into the TM install dir:
+          - Steam protects steamapps/, our process may not have write access.
+          - Keeps everything our app installs/manages in one place that's
+            obvious to find and easy to clean up.
+        """
+        return _exe_dir() / "tools"
 
     def _download_nadeo(self) -> None:
         dst = self._tools_dir()
-        if dst is None:
-            return
         self.app.log(f"[download] NadeoImporter → {dst} ...")
 
         def work():
@@ -120,8 +137,6 @@ class SettingsTab:
 
     def _download_dotnet(self) -> None:
         dst = self._tools_dir()
-        if dst is None:
-            return
         self.app.log(f"[download] Blendermania_Dotnet → {dst} ...")
 
         def work():

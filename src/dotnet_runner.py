@@ -11,10 +11,18 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from nadeo_runner import to_wine_path
+
+
+def _exe_dir() -> Path:
+    """Where forzamania.exe lives — Settings UI puts downloaded tools here."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 # Mirrors vendor/blendermania-addon/utils/Constants.py:9-11
@@ -59,10 +67,10 @@ def find_blendermania_dotnet(
 
     Search order:
       1. Explicit override (Settings UI)
-      2. <TM install>/forzamania-tools/Blendermania_Dotnet.exe (where our
-         downloader puts it)
-      3. <TM install>/forzamania-tools/Blendermania_Dotnet/Blendermania_Dotnet.exe
-         (zip layout the GitHub release uses)
+      2. <forzamania.exe dir>/tools/Blendermania_Dotnet.exe (where the
+         Download button puts it)
+      3. <forzamania.exe dir>/tools/Blendermania_Dotnet/Blendermania_Dotnet.exe
+         (in case the zip layout puts it in a subdir)
     """
     if override is not None:
         p = Path(override)
@@ -70,14 +78,14 @@ def find_blendermania_dotnet(
             raise FileNotFoundError(f"Blendermania_Dotnet override does not exist: {p}")
         return p
 
-    if tm_install_dir is not None:
-        candidates = [
-            Path(tm_install_dir) / "forzamania-tools" / "Blendermania_Dotnet.exe",
-            Path(tm_install_dir) / "forzamania-tools" / "Blendermania_Dotnet" / "Blendermania_Dotnet.exe",
-        ]
-        for cand in candidates:
-            if cand.is_file():
-                return cand
+    tools = _exe_dir() / "tools"
+    candidates = [
+        tools / "Blendermania_Dotnet.exe",
+        tools / "Blendermania_Dotnet" / "Blendermania_Dotnet.exe",
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            return cand
 
     raise FileNotFoundError(
         "Blendermania_Dotnet.exe not found. Use the Download button in Settings, "

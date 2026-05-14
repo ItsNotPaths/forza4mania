@@ -98,9 +98,10 @@ jobs:
           [ -f README.md ] && cp README.md dist-stage/
           [ -f LICENSE ] && cp LICENSE dist-stage/
           # Empty subfolder hint for users to drop NadeoImporter/Blendermania_Dotnet
-          # into if they don't want to use the Download buttons.
-          mkdir -p "dist-stage/forzamania-tools"
-          echo "Drop NadeoImporter.exe and Blendermania_Dotnet.exe here, or use Settings → Download buttons in the app." > "dist-stage/forzamania-tools/README.txt"
+          # into if they don't want to use the Download buttons. Same dir the
+          # in-app Download buttons write to (next to forzamania.exe).
+          mkdir -p "dist-stage/tools"
+          echo "Drop NadeoImporter.exe and Blendermania_Dotnet.exe here, or use Settings → Download buttons in the app." > "dist-stage/tools/README.txt"
 
       - uses: actions/upload-artifact@v4
         with:

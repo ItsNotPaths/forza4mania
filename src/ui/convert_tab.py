@@ -1,4 +1,4 @@
-"""Convert tab — pick a track + ribbon, hit Go, watch the Log tab."""
+"""Convert tab — auto-list FM4 tracks, check the ones to port, hit Export All."""
 from __future__ import annotations
 
 import sys
@@ -19,75 +19,205 @@ def _bundle_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
+def _pick_first_ribbon(track_dir: Path) -> Path | None:
+    """Auto-select a ribbon for one-shot conversion. Lowest-numbered Ribbon_NN
+    wins (Ribbon_00 = the canonical / forward configuration on every FM4
+    track we've checked)."""
+    ribbons = sorted(
+        p for p in track_dir.iterdir()
+        if p.is_dir() and p.name.lower().startswith("ribbon")
+    )
+    return ribbons[0] if ribbons else None
+
+
+def _enumerate_tracks(fm4_media_dir: Path) -> list[Path]:
+    """Find every FM4 track folder under <media>/tracks/.
+
+    A "track" = a subdir of tracks/ that contains a bin.zip AND at least one
+    Ribbon_NN subfolder. Filters out partial / non-track directories.
+    """
+    tracks_root = fm4_media_dir / "tracks"
+    if not tracks_root.is_dir():
+        return []
+    out: list[Path] = []
+    for p in sorted(tracks_root.iterdir()):
+        if not p.is_dir():
+            continue
+        if not (p / "bin.zip").is_file():
+            continue
+        if _pick_first_ribbon(p) is None:
+            continue
+        out.append(p)
+    return out
+
+
 class ConvertTab:
     def __init__(self, parent: ttk.Notebook, app: "App") -> None:
         self.app = app
         self.frame = ttk.Frame(parent)
+        self.track_vars: dict[str, tk.BooleanVar] = {}
+        self.track_paths: dict[str, Path] = {}
 
-        self.track_var = tk.StringVar(value="")
-        self.ribbon_var = tk.StringVar(value="")
+        # --- top row: source dir + refresh -----------------------------
+        top = ttk.Frame(self.frame)
+        top.pack(fill="x", padx=8, pady=(8, 4))
+        ttk.Label(top, text="FM4 source").pack(side="left")
+        self.source_var = tk.StringVar(value=self.app.settings.fm4_install_dir)
+        ttk.Entry(top, textvariable=self.source_var).pack(side="left", fill="x", expand=True, padx=4)
+        ttk.Button(top, text="Browse...", command=self._pick_source).pack(side="left", padx=2)
+        ttk.Button(top, text="Refresh", command=self.refresh).pack(side="left", padx=2)
 
-        # Track folder picker
-        ttk.Label(self.frame, text="Track folder").grid(row=0, column=0, sticky="w", padx=8, pady=6)
-        ttk.Entry(self.frame, textvariable=self.track_var, width=70).grid(
-            row=0, column=1, sticky="we", padx=4, pady=6
+        # --- track list (scrollable Checkbutton column) ----------------
+        list_frame = ttk.LabelFrame(self.frame, text="Tracks")
+        list_frame.pack(fill="both", expand=True, padx=8, pady=4)
+
+        self.canvas = tk.Canvas(list_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        self.list_inner = ttk.Frame(self.canvas)
+        self.list_inner.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
         )
-        ttk.Button(self.frame, text="Browse...", command=self._pick_track).grid(
-            row=0, column=2, padx=4, pady=6
-        )
+        self.canvas.create_window((0, 0), window=self.list_inner, anchor="nw")
+        # Mouse wheel scrolling on the canvas (Linux uses Button-4/5)
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
+        self.canvas.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(+1, "units"))
 
-        # Ribbon dropdown — populated when a track is chosen
-        ttk.Label(self.frame, text="Ribbon").grid(row=1, column=0, sticky="w", padx=8, pady=6)
-        self.ribbon_combo = ttk.Combobox(self.frame, textvariable=self.ribbon_var, width=68, state="readonly")
-        self.ribbon_combo.grid(row=1, column=1, sticky="we", padx=4, pady=6)
+        # --- bottom row: select-helpers + export -----------------------
+        helpers = ttk.Frame(self.frame)
+        helpers.pack(fill="x", padx=8, pady=(4, 0))
+        ttk.Button(helpers, text="Select all", command=self._select_all).pack(side="left", padx=2)
+        ttk.Button(helpers, text="Select none", command=self._select_none).pack(side="left", padx=2)
+        self.stop_at_fbx = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            helpers, text="Stop at FBX (skip NadeoImporter + map compose)",
+            variable=self.stop_at_fbx,
+        ).pack(side="left", padx=12)
 
-        # Action buttons
         actions = ttk.Frame(self.frame)
-        actions.grid(row=2, column=0, columnspan=3, sticky="w", padx=8, pady=12)
-        ttk.Button(actions, text="Convert (full pipeline)", command=self._convert).pack(side="left", padx=4)
-        ttk.Button(actions, text="Stop at FBX", command=self._convert_to_fbx).pack(side="left", padx=4)
+        actions.pack(fill="x", padx=8, pady=(4, 8))
+        ttk.Button(
+            actions, text="Export checked",
+            command=self._export_checked,
+        ).pack(side="left", padx=2)
+        ttk.Button(
+            actions, text="Export all",
+            command=self._export_all,
+        ).pack(side="left", padx=2)
 
-        # Status line
+        # --- status ----------------------------------------------------
         self.status_var = tk.StringVar(value="ready")
-        ttk.Label(self.frame, textvariable=self.status_var, foreground="#666").grid(
-            row=3, column=0, columnspan=3, sticky="w", padx=8, pady=4
+        ttk.Label(self.frame, textvariable=self.status_var, foreground="#666").pack(
+            anchor="w", padx=8, pady=(0, 8)
         )
 
-        self.frame.columnconfigure(1, weight=1)
+        self.refresh()
+
+    # ---- handlers --------------------------------------------------
+
+    def _on_mousewheel(self, event):
+        # Windows/Mac wheel; Linux uses Button-4/5 bound separately
+        delta = -1 if event.delta > 0 else 1
+        self.canvas.yview_scroll(delta, "units")
+
+    def _pick_source(self) -> None:
+        initial = self.source_var.get() or str(Path.home())
+        path = filedialog.askdirectory(title="Pick FM4 Media folder", initialdir=initial)
+        if path:
+            self.source_var.set(path)
+            self.refresh()
+
+    def refresh(self) -> None:
+        """Re-scan the source dir and rebuild the checkbox list."""
+        for child in self.list_inner.winfo_children():
+            child.destroy()
+        self.track_vars.clear()
+        self.track_paths.clear()
+
+        src = self.source_var.get().strip()
+        if not src:
+            ttk.Label(self.list_inner, text="set FM4 source above").pack(anchor="w", padx=8, pady=4)
+            return
+
+        tracks = _enumerate_tracks(Path(src))
+        if not tracks:
+            ttk.Label(
+                self.list_inner,
+                text=f"no tracks found under {Path(src) / 'tracks'}",
+            ).pack(anchor="w", padx=8, pady=4)
+            return
+
+        for t in tracks:
+            ribbon = _pick_first_ribbon(t)
+            label = f"{t.name}  ({ribbon.name if ribbon else 'no ribbons'})"
+            var = tk.BooleanVar(value=False)
+            self.track_vars[t.name] = var
+            self.track_paths[t.name] = t
+            ttk.Checkbutton(self.list_inner, text=label, variable=var).pack(
+                anchor="w", padx=8, pady=1
+            )
+
+        self._set_status(f"{len(tracks)} tracks found")
+
+    def _select_all(self) -> None:
+        for v in self.track_vars.values():
+            v.set(True)
+
+    def _select_none(self) -> None:
+        for v in self.track_vars.values():
+            v.set(False)
 
     def _set_status(self, s: str) -> None:
         self.status_var.set(s)
         self.app.log(f"[ui] {s}")
 
-    def _pick_track(self) -> None:
-        initial = self.app.settings.fm4_install_dir or str(Path.home())
-        path = filedialog.askdirectory(title="Pick FM4 track folder", initialdir=initial)
-        if not path:
+    def _export_checked(self) -> None:
+        checked = [name for name, v in self.track_vars.items() if v.get()]
+        if not checked:
+            messagebox.showinfo("forzamania", "No tracks checked.")
             return
-        self.track_var.set(path)
-        ribbons = sorted(p.name for p in Path(path).iterdir() if p.is_dir() and p.name.lower().startswith("ribbon"))
-        self.ribbon_combo["values"] = ribbons
-        if ribbons:
-            self.ribbon_combo.set(ribbons[0])
+        self._export(checked)
 
-    def _convert_to_fbx(self) -> None:
-        self._run_pipeline(stop_at_fbx=True)
-
-    def _convert(self) -> None:
-        self._run_pipeline(stop_at_fbx=False)
-
-    def _run_pipeline(self, stop_at_fbx: bool) -> None:
-        track_dir = self.track_var.get().strip()
-        ribbon = self.ribbon_var.get().strip()
-        if not track_dir or not ribbon:
-            messagebox.showerror("forzamania", "Pick a track folder and a ribbon.")
+    def _export_all(self) -> None:
+        if not self.track_vars:
+            messagebox.showinfo("forzamania", "No tracks loaded. Set the FM4 source first.")
             return
+        self._export(list(self.track_vars.keys()))
 
-        self._set_status("running...")
-        self.app.run_in_worker(self._pipeline, Path(track_dir), ribbon, stop_at_fbx)
+    def _export(self, track_names: list[str]) -> None:
+        # Snapshot stop-at-fbx so background thread doesn't race with UI changes.
+        stop_at_fbx = self.stop_at_fbx.get()
+        self._set_status(f"queued {len(track_names)} track(s)")
+        self.app.run_in_worker(self._batch, track_names, stop_at_fbx)
+
+    # ---- worker (runs on background thread) -----------------------
+
+    def _batch(self, track_names: list[str], stop_at_fbx: bool) -> None:
+        for i, name in enumerate(track_names, 1):
+            track_dir = self.track_paths.get(name)
+            if track_dir is None:
+                self.app.log(f"[batch] {name}: track path lost; skipping")
+                continue
+            ribbon = _pick_first_ribbon(track_dir)
+            if ribbon is None:
+                self.app.log(f"[batch] {name}: no ribbon dir; skipping")
+                continue
+            self.app.log(f"\n=== [{i}/{len(track_names)}] {name} ({ribbon.name}) ===")
+            try:
+                self._pipeline(track_dir, ribbon.name, stop_at_fbx)
+            except Exception as e:
+                import traceback
+                self.app.log(f"[!] {name} failed: {type(e).__name__}: {e}")
+                self.app.log(traceback.format_exc())
+        self._set_status(f"batch done: {len(track_names)} track(s)")
 
     def _pipeline(self, track_dir: Path, ribbon: str, stop_at_fbx: bool) -> None:
-        # All the heavy imports happen here so a UI launch doesn't pay the
+        # Heavy imports stay inside the worker so a UI launch doesn't pay the
         # numpy + Forza-X360-IO bpy-stub cost just to render the Tk window.
         from blender_bridge import dump_chunk, export_chunk_to_fbx, find_blender
         from chunker import chunk_track
@@ -157,7 +287,6 @@ class ConvertTab:
 
         if stop_at_fbx:
             log(f"[done] stopped at FBX. {len(fbx_paths)} chunks ready in {items_root}")
-            self._set_status(f"done (FBX only): {len(fbx_paths)} chunks")
             return
 
         # ---- NadeoImporter step --------------------------------------
@@ -174,7 +303,6 @@ class ConvertTab:
             )
         except FileNotFoundError as e:
             log(f"[!] {e}  — pipeline stops at FBX. Use Settings → Download NadeoImporter.")
-            self._set_status("NadeoImporter missing")
             return
         log(f"      importer: {importer}")
 
@@ -196,7 +324,6 @@ class ConvertTab:
 
         if not item_gbx_paths:
             log("[!] no items converted; skipping map composition")
-            self._set_status("no items produced")
             return
 
         # ---- Map composer step ---------------------------------------
@@ -210,14 +337,12 @@ class ConvertTab:
                 tm_install_dir=Path(self.app.settings.tm_install_dir) if self.app.settings.tm_install_dir else None,
             )
         except FileNotFoundError as e:
-            log(f"[!] {e}  — items are still usable in TM editor. Use Settings → Download Blendermania_Dotnet.")
-            self._set_status(".Item.Gbx ready, no map composed")
+            log(f"[!] {e}  — items still usable in TM editor. Use Settings → Download Blendermania_Dotnet.")
             return
 
         seed_map = _bundle_root() / "assets" / "empty_stadium.Map.Gbx"
         if not seed_map.is_file():
             log(f"[!] missing seed map at {seed_map} — can't compose. Add one and retry.")
-            self._set_status("seed map missing")
             return
 
         maps_root = out_root / "Maps" / "Forzamania"
@@ -241,7 +366,5 @@ class ConvertTab:
         )
         if result.ok:
             log(f"[done] map written: {out_map}")
-            self._set_status(f"done: {out_map.name}")
         else:
             log(f"[!] map compose failed ({result.explanation}): {result.stderr.strip()[:300]}")
-            self._set_status("map compose failed")
