@@ -19,6 +19,10 @@ on:
 
 env:
   PROJECT_NAME: forzamania
+  # Opt all actions/* (which are still on Node 20) into the runner's
+  # Node 24 toolchain — Node 20 is being removed Sept 16 2026 per
+  # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   build-windows:
