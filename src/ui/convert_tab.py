@@ -360,16 +360,27 @@ class ConvertTab:
 
         ribbon_dir = track_dir / ribbon
 
-        # Resolve out_root by reading Nadeo.ini if available — that's the
-        # ONE source NadeoImporter agrees with. Trusting our own settings
-        # field has bitten us with stale in-memory values + Wine path
-        # mangling. Nadeo.ini's UserDir uses {userdocs} which Wine
-        # resolves to C:\users\steamuser\Documents (the canonical location
-        # both we and NadeoImporter can write to and read from).
-        out_root = self._resolve_user_dir_from_nadeo_ini() or Path(
-            self.app.settings.tm_user_dir or str(Path.home() / "forzamania-out")
-        )
-        self.app.log(f"      using TM user dir: {out_root}")
+        # Two user dirs in play under Proton:
+        #   out_root     = forzamania's own Wine prefix view of Documents/
+        #                  Trackmania (always C:\users\steamuser\Documents\
+        #                  Trackmania). NadeoImporter runs in this prefix
+        #                  and only addresses files via {userdir}/Work/, so
+        #                  the FBX/XML/Item.Gbx pipeline MUST live here.
+        #   tm_user_dir  = TM2020's own prefix view of Documents/Trackmania
+        #                  (cross-prefix, addressed via Z:\). The .Map.Gbx
+        #                  + .Item.Gbx files have to land here at the end
+        #                  for TM to actually see them.
+        # We do all work in out_root, then copy outputs to tm_user_dir.
+        if sys.platform == "win32":
+            out_root = Path("C:/users/steamuser/Documents/Trackmania")
+        else:
+            out_root = Path(
+                self.app.settings.tm_user_dir or str(Path.home() / "forzamania-out")
+            )
+        tm_user_dir = self._resolve_user_dir_from_nadeo_ini()
+        self.app.log(f"      working dir: {out_root}")
+        if tm_user_dir is not None and tm_user_dir != out_root:
+            self.app.log(f"      will copy outputs to TM2020 prefix: {tm_user_dir}")
 
         # Intermediate: FBX + XML + textures live inside <userdir>/Work/...
         # because NadeoImporter resolves its path argument relative to that
@@ -638,8 +649,7 @@ class ConvertTab:
             log(f"[done] map written: {out_map}")
         else:
             # Like NadeoImporter, the dotnet helper writes most of its
-            # diagnostics to stdout, not stderr. Show both, plus the JSON
-            # config path so we can re-run it manually if needed.
+            # diagnostics to stdout, not stderr. Show both.
             log(f"[!] map compose failed ({result.explanation}, rc={result.returncode})")
             log(f"      ---- compose stdout ----")
             for line in (result.stdout or "").splitlines()[:40]:
@@ -648,3 +658,64 @@ class ConvertTab:
             for line in (result.stderr or "").splitlines()[:40]:
                 log(f"      {line}")
             log(f"      ---- end ----")
+            return
+
+        # ---- Cross-prefix copy ---------------------------------------
+        # Under Proton, forzamania.exe runs in its own Wine prefix while
+        # TM2020 runs in a different one. NadeoImporter + dotnet produced
+        # files in OUR prefix's Documents/Trackmania/{Items,Maps}/. TM2020
+        # never sees them unless we copy them into ITS prefix.
+        # tm_user_dir was resolved earlier via cross-prefix scan (Z:\ form).
+        if tm_user_dir is not None and tm_user_dir != out_root:
+            self._copy_outputs_to_tm_prefix(
+                items_root, item_gbx_paths,
+                out_map, tm_user_dir, track_dir.name,
+            )
+
+    def _copy_outputs_to_tm_prefix(
+        self,
+        items_root: Path,
+        item_gbx_paths: list[Path],
+        out_map: Path,
+        tm_user_dir: Path,
+        track_name: str,
+    ) -> None:
+        """Mirror our Items/Forzamania/<track>/ + Maps/Forzamania/<track>.Map.Gbx
+        from forzamania's prefix into TM2020's prefix."""
+        log = self.app.log
+        log("[7/7] copying outputs to TM2020 prefix...")
+
+        dst_items = tm_user_dir / "Items" / "Forzamania" / track_name
+        dst_maps = tm_user_dir / "Maps" / "Forzamania"
+        try:
+            dst_items.mkdir(parents=True, exist_ok=True)
+            dst_maps.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            log(f"[!] mkdir on TM prefix failed: {e}")
+            return
+
+        # Copy ALL .Mesh.Gbx, .Shape.Gbx, .Item.Gbx (any case) — TM may
+        # need the mesh/shape too even though only Item.Gbx is referenced
+        # by the map (depends on whether Items are embedded by reference
+        # or value).
+        copied = 0
+        for src in items_root.iterdir():
+            if not src.is_file():
+                continue
+            low = src.name.lower()
+            if not (low.endswith(".item.gbx") or low.endswith(".mesh.gbx") or low.endswith(".shape.gbx")):
+                continue
+            dst = dst_items / src.name
+            try:
+                dst.write_bytes(src.read_bytes())
+                copied += 1
+            except OSError as e:
+                log(f"[!] copy {src.name} failed: {e}")
+
+        try:
+            dst_map = dst_maps / out_map.name
+            dst_map.write_bytes(out_map.read_bytes())
+            log(f"      copied {copied} item files + map → {tm_user_dir}")
+            log(f"      open in TM2020: My Local Maps → Forzamania → {track_name}")
+        except OSError as e:
+            log(f"[!] copy {out_map.name} failed: {e}")
