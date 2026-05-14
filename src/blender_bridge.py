@@ -9,7 +9,6 @@ Blender freely.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -18,6 +17,7 @@ import numpy as np
 from chunker import MeshChunk
 from fm4.ir import TrackIR
 from materials import TM2020Material
+from subproc import run_captured
 
 
 def find_blender(override: Path | None = None) -> Path:
@@ -127,16 +127,11 @@ def export_chunk_to_fbx(
         "--",
         str(chunk_json),
     ]
-    # stdin=DEVNULL: under PyInstaller --windowed on Windows, the parent
-    # has no console so its stdin handle is invalid; subprocess inheriting
-    # it fails with WinError 6. Explicitly nulling stdin avoids that.
-    result = subprocess.run(
-        cmd,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    # subproc.run_captured = subprocess.run with the full PyInstaller-windowed
+    # hardening (stdin=DEVNULL + STARTF_USESHOWWINDOW + CREATE_NO_WINDOW).
+    # Plain subprocess.run fails with WinError 6 under --windowed because the
+    # parent's stdio handles are NULL.
+    result = run_captured(cmd, timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError(
             f"blender export failed (rc={result.returncode}):\n"

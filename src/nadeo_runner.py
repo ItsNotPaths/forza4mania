@@ -14,10 +14,11 @@ just produce arguments wine can swallow.
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from subproc import run_captured
 
 
 def _exe_dir() -> Path:
@@ -89,15 +90,10 @@ def to_wine_path(p: Path | str) -> str:
 
 
 def _run(cmd: list[str], cwd: Path | None) -> tuple[int, str, str]:
-    # stdin=DEVNULL: under PyInstaller --windowed the parent's stdin is
-    # an invalid handle and subprocess inheriting it raises WinError 6.
-    proc = subprocess.run(
-        cmd,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        cwd=cwd,
-    )
+    # See subproc.run_captured for the rationale (PyInstaller --windowed
+    # + Windows = invalid parent stdio handles, WinError 6 without proper
+    # creationflags + startupinfo).
+    proc = run_captured(cmd, cwd=cwd)
     return proc.returncode, proc.stdout, proc.stderr
 
 

@@ -136,17 +136,13 @@ _HDR = struct.Struct(">II")
 
 def _spawn_daemon() -> subprocess.Popen:
     helper = helper_path()
-    # Capture stderr to a PIPE instead of letting it inherit the parent's
-    # (which is /dev/null under PyInstaller --windowed). When the helper
-    # dies on startup — missing DLL, libmspack init failure, etc. — its
-    # error message lives in this pipe and gets surfaced by decode_lzx.
-    proc = subprocess.Popen(
-        [str(helper), "daemon"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        bufsize=0,
-    )
+    # popen_pipes adds the same PyInstaller-windowed hardening
+    # (STARTF_USESHOWWINDOW + CREATE_NO_WINDOW) that run_captured uses.
+    # stderr is captured so daemon-startup failures (missing DLL,
+    # libmspack init, etc.) get surfaced by decode_lzx instead of being
+    # silently dropped on the floor.
+    from subproc import popen_pipes
+    proc = popen_pipes([str(helper), "daemon"], capture_stderr=True)
     if proc.stdin is None or proc.stdout is None:
         raise DecompressionError("failed to attach pipes to lzxd_helper daemon")
     atexit.register(_shutdown_daemon)
