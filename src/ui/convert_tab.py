@@ -12,11 +12,39 @@ if TYPE_CHECKING:
 
 
 def _bundle_root() -> Path:
-    """Repo root in dev, sys._MEIPASS in PyInstaller --onefile mode."""
+    """Repo root in dev, sys._MEIPASS in PyInstaller --onefile mode.
+
+    Use this for read-only data shipped *inside* the bundle (vendored Forza
+    parsers, the Blender export script). Don't use it for user-droppable
+    files — those should live next to the .exe via _exe_dir().
+    """
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         return Path(meipass)
     return Path(__file__).resolve().parent.parent.parent
+
+
+def _exe_dir() -> Path:
+    """Where forzamania.exe (or the dev script) actually lives.
+
+    Use this for files the user might drop in themselves (the seed map,
+    downloaded helpers under tools/). In dev, falls back to the repo root.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _find_seed_map() -> Path | None:
+    """Locate empty_stadium.Map.Gbx — user-droppable next to .exe wins, then
+    fall back to whatever was baked into the bundle."""
+    for candidate in (
+        _exe_dir() / "assets" / "empty_stadium.Map.Gbx",
+        _bundle_root() / "assets" / "empty_stadium.Map.Gbx",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _pick_first_ribbon(track_dir: Path) -> Path | None:
@@ -340,10 +368,15 @@ class ConvertTab:
             log(f"[!] {e}  — items still usable in TM editor. Use Settings → Download Blendermania_Dotnet.")
             return
 
-        seed_map = _bundle_root() / "assets" / "empty_stadium.Map.Gbx"
-        if not seed_map.is_file():
-            log(f"[!] missing seed map at {seed_map} — can't compose. Add one and retry.")
+        seed_map = _find_seed_map()
+        if seed_map is None:
+            log(
+                "[!] no seed map found. Drop a blank empty_stadium.Map.Gbx into "
+                "an 'assets/' folder next to forzamania.exe and retry. "
+                "(Items are still produced; only the .Map.Gbx step is skipped.)"
+            )
             return
+        log(f"      seed map: {seed_map}")
 
         maps_root = out_root / "Maps" / "Forzamania"
         maps_root.mkdir(parents=True, exist_ok=True)
