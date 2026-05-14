@@ -364,6 +364,27 @@ class ConvertTab:
                 "Re-extract the full Nadeo zip into tools/ and retry."
             )
 
+        # Sanity: Nadeo.ini must also live next to NadeoImporter.exe, OR
+        # NadeoImporter aborts at init with "ini file not found". The
+        # canonical copy lives in the TM2020 install root; mirror it into
+        # our tools/ dir if missing.
+        ini = importer.parent / "Nadeo.ini"
+        if not ini.is_file():
+            tm_install = self.app.settings.tm_install_dir
+            src_ini = Path(tm_install) / "Nadeo.ini" if tm_install else None
+            if src_ini and src_ini.is_file():
+                try:
+                    ini.write_bytes(src_ini.read_bytes())
+                    log(f"      copied Nadeo.ini from {src_ini} → {ini}")
+                except OSError as e:
+                    log(f"[!] failed to copy Nadeo.ini: {e}")
+            else:
+                log(
+                    f"[!] missing {ini} — NadeoImporter aborts without it. "
+                    f"Copy {tm_install or '<TM install>'}/Nadeo.ini into tools/ "
+                    "(or set TM2020 install dir in Settings so we can auto-copy)."
+                )
+
         item_gbx_paths: list[Path] = []
         wine_cmd = self.app.settings.wine_command if self.app.settings.linux_mode else None
 
