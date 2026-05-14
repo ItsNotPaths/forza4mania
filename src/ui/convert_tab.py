@@ -353,15 +353,46 @@ class ConvertTab:
             return
         log(f"      importer: {importer}")
 
+        # Sanity: NadeoImporterMaterialLib.txt MUST live next to the .exe.
+        # Without it NadeoImporter fails silently on every material — same
+        # symptom as a generic mesh-step failure with no stderr output.
+        matlib = importer.parent / "NadeoImporterMaterialLib.txt"
+        if not matlib.is_file():
+            log(
+                f"[!] missing {matlib} — NadeoImporter needs this file (it ships in the same zip "
+                "as NadeoImporter.exe). Without it every chunk silently fails. "
+                "Re-extract the full Nadeo zip into tools/ and retry."
+            )
+
         item_gbx_paths: list[Path] = []
         wine_cmd = self.app.settings.wine_command if self.app.settings.linux_mode else None
+
+        # Keep the per-chunk log line short, but on the FIRST failure dump
+        # the full output (stdout AND stderr, plus return code) so we don't
+        # have to guess what NadeoImporter is upset about. NadeoImporter
+        # writes most diagnostics to stdout on Windows, not stderr.
+        first_failure_logged = False
+
+        def _log_full(label: str, fbx_name: str, res) -> None:
+            nonlocal first_failure_logged
+            log(f"      [!] {fbx_name} {label} failed (rc={res.returncode}): {(res.stderr or res.stdout).strip()[:200]}")
+            if not first_failure_logged:
+                log(f"      ---- {label} stdout ----")
+                for line in (res.stdout or "").splitlines()[:40]:
+                    log(f"      {line}")
+                log(f"      ---- {label} stderr ----")
+                for line in (res.stderr or "").splitlines()[:40]:
+                    log(f"      {line}")
+                log(f"      ---- end ----")
+                first_failure_logged = True
+
         for fbx in fbx_paths:
             mesh_res, item_res = convert_chunk(importer, fbx, self.app.settings.linux_mode, wine_cmd)
             if not mesh_res.ok:
-                log(f"      [!] {fbx.name} mesh step failed: {mesh_res.stderr.strip()[:200]}")
+                _log_full("mesh step", fbx.name, mesh_res)
                 continue
             if not item_res.ok:
-                log(f"      [!] {fbx.name} item step failed: {item_res.stderr.strip()[:200]}")
+                _log_full("item step", fbx.name, item_res)
                 continue
             item_gbx = fbx.with_suffix(".Item.Gbx")
             if item_gbx.is_file():
