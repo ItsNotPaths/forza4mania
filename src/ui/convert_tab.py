@@ -319,7 +319,16 @@ class ConvertTab:
                 continue
             fbx_paths.append(fbx_path)
 
-            tm_mats = sorted({m for m in mats.values()}, key=lambda x: x.name)
+            # Dedup by name — TM2020Material isn't hashable (dataclass default
+            # with eq=True), and material_name is the natural identity anyway.
+            seen: set[str] = set()
+            tm_mats = []
+            for m in mats.values():
+                if m.name in seen:
+                    continue
+                seen.add(m.name)
+                tm_mats.append(m)
+            tm_mats.sort(key=lambda x: x.name)
             write_mesh_params(fbx_path, tm_mats)
             write_item_xml(fbx_path)
 
