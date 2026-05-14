@@ -34,6 +34,14 @@ ITEM_POSITION_Y_OFFSET = 8.0
 BLOCK_GRID_M = 32.0
 BLOCK_GRID_Y_OFFSET = 9  # cells, per addon
 
+# TM2020 maps are a positive-only coordinate space anchored at the (0,0,0)
+# corner — anything at negative X/Z is literally off the map and TM reports
+# the item as "missing". FM4 world coords span both signs, so we shift the
+# whole track into positive space before composing. Margins keep the track
+# clear of the very edge.
+POSITIVE_MARGIN_M = 64.0       # X/Z breathing room from the (0,0) corner
+GROUND_CLEARANCE_M = 16.0      # lift so the lowest geometry sits above floor
+
 
 @dataclass
 class PlacedItem:
@@ -165,15 +173,42 @@ def compose_map(
     if config_dir is None:
         config_dir = output_map.parent
 
+    # --- shift the whole track into TM2020's positive-only space --------
+    # Find the min corner across all item positions, then translate every
+    # item so that corner lands at (+POSITIVE_MARGIN_M, _, +POSITIVE_MARGIN_M)
+    # and the lowest point is GROUND_CLEARANCE_M above the floor. Without
+    # this, ~58% of a typical FM4 track sits at negative X/Z = off-map =
+    # TM reports every one of those items as "missing".
+    if placed_items:
+        min_x = min(it.position_xyz[0] for it in placed_items)
+        min_y = min(it.position_xyz[1] for it in placed_items)
+        min_z = min(it.position_xyz[2] for it in placed_items)
+        off_x = POSITIVE_MARGIN_M - min_x
+        off_y = GROUND_CLEARANCE_M - min_y
+        off_z = POSITIVE_MARGIN_M - min_z
+    else:
+        off_x = off_y = off_z = 0.0
+
+    def _shifted(xyz: tuple[float, float, float]) -> tuple[float, float, float]:
+        return (xyz[0] + off_x, xyz[1] + off_y, xyz[2] + off_z)
+
     items_payload = []
+    shifted_items: list[PlacedItem] = []
     for it in placed_items:
+        new_pos = _shifted(it.position_xyz)
+        shifted_items.append(PlacedItem(
+            name=it.name,
+            item_gbx_path=it.item_gbx_path,
+            position_xyz=new_pos,
+            rotation_xyz=it.rotation_xyz,
+        ))
         # Empty strings for the enum fields make the dotnet helper bail
         # with "Unable to parse '' as a value of EPhaseOffset" — defaults
         # come from vendor/blendermania-addon/utils/Dotnet.py:29-66.
         items_payload.append({
             "Name": it.name,
             "Path": str(it.item_gbx_path),
-            "Position": _to_dotnet_vector3(it.position_xyz),
+            "Position": _to_dotnet_vector3(new_pos),
             "Rotation": _to_dotnet_vector3(it.rotation_xyz),
             "Pivot": _to_dotnet_vector3((0.0, 0.0, 0.0)),
             "AnimPhaseOffset": "None",
@@ -181,7 +216,9 @@ def compose_map(
             "LightmapQuality": "Normal",
         })
 
-    blocks_payload = compute_ground_block_grid(placed_items, block_name=block_name)
+    # Block grid is derived from the (already-shifted) item positions, so it
+    # lands in positive space too and stays aligned under the items.
+    blocks_payload = compute_ground_block_grid(shifted_items, block_name=block_name)
 
     payload = {
         "MapPath": str(output_map),
