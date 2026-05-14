@@ -8,14 +8,30 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-_REPO = Path(__file__).resolve().parent.parent.parent
-_SRC = _REPO / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+
+def _working_dir() -> Path:
+    """Where extracted FM4 bin/ trees live.
+
+    PyInstaller --onefile mode: next to the .exe so files persist across
+    runs (otherwise we'd re-extract a couple hundred MB to a temp dir
+    every launch, since _MEIPASS gets wiped on exit).
+    Dev mode: <repo>/working/.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "working"
+    return Path(__file__).resolve().parent.parent.parent / "working"
+
+
+# In dev mode this sets up sys.path so binzip / lzx import; under PyInstaller
+# the bundled paths handle that already.
+_DEV_REPO = Path(__file__).resolve().parent.parent.parent
+_DEV_SRC = _DEV_REPO / "src"
+if not getattr(sys, "frozen", False) and str(_DEV_SRC) not in sys.path:
+    sys.path.insert(0, str(_DEV_SRC))
 
 from binzip import list_entries, read_entry  # noqa: E402
 
-WORKING = _REPO / "working"
+WORKING = _working_dir()
 SENTINEL_NAME = ".extracted"
 
 
@@ -40,31 +56,16 @@ def extract_bin_zip(track_dir: Path, dst_root: Path | None = None) -> Path:
     dst_root.mkdir(parents=True, exist_ok=True)
     entries = list_entries(src_zip)
 
-    ok = 0
-    failures: list[tuple[str, str]] = []
+    # No per-entry try/except: any decompression error here is almost
+    # always a config issue (lzxd_helper missing, libmspack symbol
+    # mismatch) that affects every entry the same way. Letting the first
+    # failure surface gives a clear root-cause message instead of a half-
+    # extracted bin/ that quietly produces "0 meshes" downstream.
     for entry in entries:
         out_path = dst_root / entry.filename
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            data = read_entry(src_zip, entry)
-        except Exception as e:
-            failures.append((entry.filename, f"{type(e).__name__}: {e}"))
-            continue
+        data = read_entry(src_zip, entry)
         out_path.write_bytes(data)
-        ok += 1
-
-    if ok == 0:
-        raise RuntimeError(
-            f"all {len(entries)} entries failed to extract from {src_zip}"
-        )
-
-    if failures:
-        print(
-            f"[extract] {len(failures)} of {len(entries)} entries failed",
-            file=sys.stderr,
-        )
-        for name, why in failures[:5]:
-            print(f"  {name}: {why}", file=sys.stderr)
 
     sentinel.touch()
     return dst_root

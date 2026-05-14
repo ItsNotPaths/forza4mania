@@ -38,8 +38,15 @@ class DecompressionError(RuntimeError):
     pass
 
 
+_HELPER_NAMES = ("lzxd_helper.exe", "lzxd_helper") if sys.platform == "win32" else ("lzxd_helper",)
+
+
 @lru_cache(maxsize=1)
 def helper_path() -> Path:
+    """Find the lzxd_helper binary. On Windows we accept .exe or no-extension
+    so the same code path works whether the file got bundled with or without
+    the suffix (PyInstaller --add-binary preserves the source filename, which
+    on Windows is lzxd_helper.exe)."""
     override = os.environ.get("FORZAMANIA_LZXD_HELPER")
     if override:
         p = Path(override)
@@ -47,24 +54,24 @@ def helper_path() -> Path:
             raise FileNotFoundError(f"FORZAMANIA_LZXD_HELPER points at {p} which does not exist")
         return p
 
+    search_dirs: list[Path] = []
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
-        p = Path(meipass) / "lzxd_helper"
-        if p.exists():
-            return p
-
-    exe_dir = Path(sys.executable).resolve().parent
+        search_dirs.append(Path(meipass))
+    search_dirs.append(Path(sys.executable).resolve().parent)
     here = Path(__file__).resolve()
-    src_dir = here.parent                        # .../src (lzx.py lives in src/)
-    candidates = [
-        exe_dir / "lzxd_helper",
-        src_dir / "lzxd_helper",
-    ]
-    for c in candidates:
-        if c.exists():
-            return c.resolve()
+    search_dirs.append(here.parent)              # .../src (lzx.py lives in src/)
+
+    for d in search_dirs:
+        for name in _HELPER_NAMES:
+            p = d / name
+            if p.exists():
+                return p.resolve()
+
+    tried = ", ".join(str(d / _HELPER_NAMES[0]) for d in search_dirs)
     raise FileNotFoundError(
-        "lzxd_helper not found. Run release.sh --local or set FORZAMANIA_LZXD_HELPER."
+        f"lzxd_helper not found in any of: {tried}. "
+        "Run release.sh --local or set FORZAMANIA_LZXD_HELPER."
     )
 
 
