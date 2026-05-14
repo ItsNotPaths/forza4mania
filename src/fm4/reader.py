@@ -25,6 +25,72 @@ from forza_blender.forza.pvs.read_pvs import PVS  # noqa: E402
 from forza_blender.forza.shaders.read_shader import FXLShader  # noqa: E402
 
 
+def _decode_indexed_triangles(indices: np.ndarray, reset_index: int) -> np.ndarray:
+    """Decode an FM4 'TriStrip' (IndexType 6) index buffer to a face array.
+
+    The vendored generate_triangle_list assumes a classic continuous
+    triangle strip. FM4's actual format for type-6 buffers is a
+    0xFFFF-SEPARATED set of runs:
+
+        [a,b,c, 0xFFFF, d,e,f, 0xFFFF, g,h,i,j,k, 0xFFFF, ...]
+
+    Most runs are exactly 3 indices (a plain triangle); some are longer
+    (a genuine strip). Splitting on the reset index and decoding each run
+    by length handles both — and produces the correct face count instead
+    of the ~2.4x inflation the pure-strip decoder gives on separated data.
+
+    Returns an (F, 3) uint32 array.
+    """
+    faces: list[np.ndarray] = []
+    # Boundaries between runs are the reset markers.
+    is_reset = indices == reset_index
+    # Indices of reset markers; split the array on them.
+    split_points = np.flatnonzero(is_reset)
+    runs = np.split(indices, split_points)
+    for run in runs:
+        # The first element of every run after the first IS the reset
+        # marker — strip it. (np.split keeps the delimiter at the start.)
+        if run.size and run[0] == reset_index:
+            run = run[1:]
+        n = run.size
+        if n < 3:
+            continue
+        if n == 3:
+            faces.append(run.reshape(1, 3))
+            continue
+        # Genuine strip run: classic alternating-winding triangulation.
+        a = run[:-2]
+        b = run[1:-1]
+        c = run[2:]
+        tris = np.stack([a, b, c], axis=1).astype(np.int64)
+        # odd triangles get their first two verts swapped
+        odd = np.arange(tris.shape[0]) % 2 == 1
+        tris[odd, 0], tris[odd, 1] = tris[odd, 1], tris[odd, 0].copy()
+        # drop degenerate (collapsed) triangles from the strip stitching
+        keep = (tris[:, 0] != tris[:, 1]) & (tris[:, 1] != tris[:, 2]) & (tris[:, 0] != tris[:, 2])
+        faces.append(tris[keep])
+    if not faces:
+        return np.zeros((0, 3), dtype=np.uint32)
+    return np.concatenate(faces).astype(np.uint32)
+
+
+def _patch_triangle_decoder() -> None:
+    """Replace the vendored strip decoder with our run-aware one.
+
+    forza_track_section imports generate_triangle_list by value at module
+    load, so we patch it in that module's namespace (not just mesh_util).
+    """
+    import forza_blender.forza.models.forza_track_section as _fts
+
+    def _shim(indices, reset_index):
+        return _decode_indexed_triangles(np.asarray(indices), reset_index)
+
+    _fts.generate_triangle_list = _shim
+
+
+_patch_triangle_decoder()
+
+
 def _build_case_index(bin_dir: Path) -> dict[str, Path]:
     """Map every lowercased relative path under bin_dir to its real path.
 
@@ -112,7 +178,12 @@ def _pick_shader_for_section(
 def _decode_track_section(rmb: RmbBin, section_idx: int, shaders: dict[str, FXLShader]) -> MeshData | None:
     """Build one MeshData from one RmbBin track section."""
     section = rmb.track_sections[section_idx]
-    matset = rmb.material_sets[section_idx]
+    # Multi-section rmb files frequently carry FEWER material_sets than
+    # sections — all trailing sections share the last matset. Clamp the
+    # index instead of IndexError-ing (or, as the old code did, refusing
+    # to decode those sections at all — which silently dropped ~60% of
+    # all road surface geometry, including pit lanes).
+    matset = rmb.material_sets[min(section_idx, len(rmb.material_sets) - 1)]
 
     if not matset.materials:
         return None
@@ -205,8 +276,13 @@ def read_track(track_dir: Path | str, ribbon_dir: Path | str) -> TrackIR:
             rmb = RmbBin.from_path(str(rmb_path))
         except Exception:
             continue
-        section_count = min(len(rmb.track_sections), len(rmb.material_sets))
-        for s_idx in range(section_count):
+        # Decode EVERY section. A single rmb file's sections are distinct
+        # PARTS of one model (e.g. road base + lane surface), not LODs —
+        # LODs live in separate files. The old min(sections, matsets)
+        # cutoff dropped any section past the matset count, losing the
+        # majority of road surface geometry. _decode_track_section clamps
+        # the matset lookup so trailing sections reuse the last matset.
+        for s_idx in range(len(rmb.track_sections)):
             mesh = _decode_track_section(rmb, s_idx, shaders)
             if mesh is None:
                 continue
@@ -214,24 +290,23 @@ def read_track(track_dir: Path | str, ribbon_dir: Path | str) -> TrackIR:
             meshes[key] = mesh
 
     # Combine main + lone instance arrays (mirrors addon ops.py:218). FM4
-    # tracks split visible placements across both arrays. Within
-    # models_instances, ~60% of entries on real FM4 data have all-zero
-    # translation + identity rotation + flags=0x0fff0214 — they're some kind
-    # of template/deferred marker that contributes no visible geometry. We
-    # drop them so they don't all collapse at world origin and dominate the
-    # bbox / chunker buckets.
+    # tracks split visible placements across both arrays.
+    #
+    # We keep EVERY instance — no filtering. An earlier version dropped
+    # instances with all-zero translation, assuming they were templates.
+    # That was wrong: in FM4, large track geometry (road, bridges,
+    # guardrails, tunnels, buildings) has its world position baked into
+    # the vertex data, so its instance transform is legitimately identity
+    # at the origin. Only small *reused* props (trees, lampposts, vehicles)
+    # carry a non-zero transform. Filtering on zero-translation threw out
+    # the entire track and kept only the garnish. The chunker handles the
+    # mixed local/world-space geometry by bucketing on real vertex AABBs.
     instances: list[MeshInstance] = []
     raw_iter = list(pvs.models_instances) + list(getattr(pvs, "lone_models_instances", []))
     for inst in raw_iter:
-        m = _build_transform(inst)
-        is_origin = (
-            m[0, 3] == 0.0 and m[1, 3] == 0.0 and m[2, 3] == 0.0
-        )
-        if is_origin and (inst.flags & 0x0FFF0000) == 0x0FFF0000:
-            continue
         instances.append(MeshInstance(
             model_index=inst.model_index,
-            transform=m,
+            transform=_build_transform(inst),
             texture_index=inst.texture,
             flags=inst.flags,
         ))

@@ -47,11 +47,44 @@ class MeshChunk:
         self._tri_count = v
 
 
-def _instance_world_position(instance: MeshInstance) -> np.ndarray:
-    """Extract world-space translation from instance's 4x4."""
-    m = instance.transform
-    # Forza transforms have translation in the last column rows 0..2
-    return np.array([m[0, 3], m[1, 3], m[2, 3]], dtype=np.float32)
+def _instance_world_aabb(
+    track: TrackIR, instance: MeshInstance, keys: list[int]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Real world-space AABB of a placed instance.
+
+    We CAN'T use the transform's translation column as the position —
+    FM4 bakes large track geometry's world position into the vertex data
+    with an identity transform, so that column is (0,0,0) for the road,
+    bridges, guardrails, etc. Instead we transform the mesh's local vertex
+    AABB corners by the instance matrix and take the bounds of the result.
+    That works for both world-baked geometry (identity transform, vertices
+    already placed) and reused props (real transform, local vertices).
+    """
+    m = instance.transform  # 4x4 row-major
+    lo = np.array([np.inf, np.inf, np.inf], dtype=np.float64)
+    hi = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float64)
+    for k in keys:
+        mesh = track.meshes.get(k)
+        if mesh is None or mesh.vertices.shape[0] == 0:
+            continue
+        v = mesh.vertices  # (N,3)
+        mlo = v.min(axis=0)
+        mhi = v.max(axis=0)
+        # 8 corners of the local AABB
+        corners = np.array([
+            [mlo[0], mlo[1], mlo[2]], [mhi[0], mlo[1], mlo[2]],
+            [mlo[0], mhi[1], mlo[2]], [mhi[0], mhi[1], mlo[2]],
+            [mlo[0], mlo[1], mhi[2]], [mhi[0], mlo[1], mhi[2]],
+            [mlo[0], mhi[1], mhi[2]], [mhi[0], mhi[1], mhi[2]],
+        ], dtype=np.float64)
+        # apply transform: world = R·local + t
+        world = corners @ m[:3, :3].T + m[:3, 3]
+        lo = np.minimum(lo, world.min(axis=0))
+        hi = np.maximum(hi, world.max(axis=0))
+    if not np.all(np.isfinite(lo)):
+        # No usable mesh — degenerate; collapse to origin so it still buckets.
+        return np.zeros(3), np.zeros(3)
+    return lo, hi
 
 
 def _tri_count_for_instance(track: TrackIR, instance: MeshInstance) -> int:
@@ -93,21 +126,27 @@ def chunk_track(
          itself oversized — flagged so downstream stages can warn or
          decimate. (v1: warn only.)
     """
-    keepable: list[tuple[MeshInstance, int, list[int]]] = []
+    # Each keepable entry carries the instance, its tri count, its mesh
+    # keys, AND its real world-space AABB (lo, hi) — see _instance_world_aabb
+    # for why the transform translation alone is not a usable position.
+    keepable: list[tuple[MeshInstance, int, list[int], np.ndarray, np.ndarray]] = []
     for inst in track.instances:
         keys = _mesh_keys_for_instance(track, inst)
         if not keys:
             continue
         tris = _tri_count_for_instance(track, inst)
-        keepable.append((inst, tris, keys))
+        lo, hi = _instance_world_aabb(track, inst, keys)
+        keepable.append((inst, tris, keys, lo, hi))
 
-    buckets: dict[tuple[int, int], list[tuple[MeshInstance, int, list[int]]]] = defaultdict(list)
-    for inst, tris, keys in keepable:
-        pos = _instance_world_position(inst)
-        # Forza is Y-up; tile by XZ plane (the ground plane)
-        bx = int(np.floor(pos[0] / tile_size_m))
-        bz = int(np.floor(pos[2] / tile_size_m))
-        buckets[(bx, bz)].append((inst, tris, keys))
+    buckets: dict[tuple[int, int], list[tuple[MeshInstance, int, list[int], np.ndarray, np.ndarray]]] = defaultdict(list)
+    for entry in keepable:
+        _, _, _, lo, hi = entry
+        # Bucket by the AABB CENTER on the XZ ground plane (Forza is Y-up).
+        cx = (lo[0] + hi[0]) * 0.5
+        cz = (lo[2] + hi[2]) * 0.5
+        bx = int(np.floor(cx / tile_size_m))
+        bz = int(np.floor(cz / tile_size_m))
+        buckets[(bx, bz)].append(entry)
 
     chunks: list[MeshChunk] = []
     for (bx, bz) in sorted(buckets.keys()):
@@ -122,6 +161,7 @@ def chunk_track(
 
         def flush() -> None:
             nonlocal current_instances, current_keys, current_tris, sub
+            nonlocal current_lo, current_hi
             if not current_instances:
                 return
             # Encode signed coords with a letter prefix instead of -/+:
@@ -136,18 +176,30 @@ def chunk_track(
                 current_instances,
                 current_keys,
                 current_tris,
+                bbox_min=current_lo,
+                bbox_max=current_hi,
             ))
             current_instances = []
             current_keys = set()
             current_tris = 0
+            current_lo = None
+            current_hi = None
             sub += 1
 
-        for inst, tris, keys in bucket:
+        current_lo: np.ndarray | None = None
+        current_hi: np.ndarray | None = None
+
+        for inst, tris, keys, lo, hi in bucket:
             if current_tris + tris > tri_budget and current_instances:
                 flush()
             current_instances.append(inst)
             current_keys.update(keys)
             current_tris += tris
+            if current_lo is None:
+                current_lo, current_hi = lo.copy(), hi.copy()
+            else:
+                current_lo = np.minimum(current_lo, lo)
+                current_hi = np.maximum(current_hi, hi)
 
         flush()
 
@@ -160,18 +212,9 @@ def _finalize_chunk(
     instances: list[MeshInstance],
     keys: Iterable[int],
     tri_count: int,
+    bbox_min: np.ndarray | None = None,
+    bbox_max: np.ndarray | None = None,
 ) -> MeshChunk:
-    bbox_min = None
-    bbox_max = None
-    for inst in instances:
-        pos = _instance_world_position(inst)
-        if bbox_min is None:
-            bbox_min = pos.copy()
-            bbox_max = pos.copy()
-        else:
-            bbox_min = np.minimum(bbox_min, pos)
-            bbox_max = np.maximum(bbox_max, pos)
-
     chunk = MeshChunk(
         name=name,
         instances=instances,
