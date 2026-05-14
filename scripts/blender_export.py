@@ -126,7 +126,86 @@ def _build_consolidated_mesh(name: str, chunk: dict) -> bpy.types.Object:
 
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.scene.collection.objects.link(obj)
+
+    _add_lightmap_uv(obj)
     return obj
+
+
+def _add_lightmap_uv(obj: bpy.types.Object) -> None:
+    """Add a non-overlapping LightMap UV layer.
+
+    NadeoImporter requires every material to have at least 2 UV layers
+    (``BaseMaterial`` + ``LightMap``); without it, mesh import fails with
+    "not enough UvLayers for material (1 < 2)". The LightMap UV needs to
+    be non-overlapping per face so the in-game lightmap baker can give
+    each face unique pixels.
+
+    Strategy (in order of preference):
+      1. ``uv.lightmap_pack`` — purpose-built op, fast on big meshes.
+      2. ``uv.smart_project`` — slower but more universally available.
+      3. Clone ``BaseMaterial`` UVs into ``LightMap``. Lightmap will
+         have overlap artifacts but the FBX still passes the importer.
+    """
+    mesh = obj.data
+    mesh.uv_layers.new(name="LightMap")
+
+    # Make obj the active selection — bpy.ops.uv.* operators need this
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+
+    # Mark LightMap as the active UV layer so the unwrap writes there
+    for i, layer in enumerate(mesh.uv_layers):
+        if layer.name == "LightMap":
+            mesh.uv_layers.active_index = i
+            break
+
+    unwrap_ok = False
+    try:
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        try:
+            bpy.ops.uv.lightmap_pack(
+                PREF_CONTEXT="ALL_FACES",
+                PREF_PACK_IN_ONE=True,
+                PREF_NEW_UVLAYER=False,
+                PREF_APPLY_IMAGE=False,
+                PREF_IMG_PX_SIZE=1024,
+                PREF_BOX_DIV=12,
+                PREF_MARGIN_DIV=0.1,
+            )
+            unwrap_ok = True
+        except Exception:
+            try:
+                bpy.ops.uv.smart_project(
+                    angle_limit=66.0,
+                    island_margin=0.02,
+                    area_weight=0.0,
+                )
+                unwrap_ok = True
+            except Exception:
+                pass
+    finally:
+        try:
+            bpy.ops.object.mode_set(mode="OBJECT")
+        except Exception:
+            pass
+
+    if not unwrap_ok:
+        # Fallback: copy BaseMaterial → LightMap so we at least pass the
+        # importer's UV-layer-count check. Visual lighting will be wrong.
+        base = mesh.uv_layers.get("BaseMaterial")
+        light = mesh.uv_layers.get("LightMap")
+        if base is not None and light is not None:
+            for i in range(len(base.data)):
+                light.data[i].uv = base.data[i].uv
+
+    # Restore BaseMaterial as the active UV layer — Blender's FBX exporter
+    # writes the active layer first, and NadeoImporter wants BaseMaterial
+    # at index 0 so it can find diffuse textures correctly.
+    for i, layer in enumerate(mesh.uv_layers):
+        if layer.name == "BaseMaterial":
+            mesh.uv_layers.active_index = i
+            break
 
 
 def main() -> int:
