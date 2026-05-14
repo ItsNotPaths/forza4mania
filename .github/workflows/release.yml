@@ -132,6 +132,7 @@ jobs:
           fi
           gh release create "${{ inputs.version }}" \
               "${PROJECT_NAME}-${{ inputs.version }}-windows.zip" \
+              --repo "${GITHUB_REPOSITORY}" \
               --title "${{ inputs.version }}" \
               --notes "${{ inputs.notes }}" \
               $PRERELEASE_FLAG
