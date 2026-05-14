@@ -59,13 +59,22 @@ jobs:
           # rtools/msys64 install. `gcc` should be on PATH.
           which gcc || { echo "gcc not on PATH" >&2; exit 1; }
           MSPACK="vendor/libmspack/libmspack/mspack"
+          # Fully static-link the C/C++ runtime so the helper has zero DLL
+          # dependencies. Without these flags mingw produces an exe that
+          # needs libgcc_s_seh-1.dll and libwinpthread-1.dll on PATH —
+          # missing under Wine, the daemon exits before its first read.
           gcc -O2 -Wall \
+              -static -static-libgcc -static-libstdc++ \
               -I"$MSPACK" \
               -o src/lzxd_helper.exe \
               src/lzxd_helper.c \
               "$MSPACK/lzxd.c" \
               "$MSPACK/system.c"
           ls -la src/lzxd_helper.exe
+          # Sanity: print remaining runtime deps. After --static this should
+          # only list KERNEL32, msvcrt, and similar Win32-side libs.
+          (command -v ldd >/dev/null && ldd src/lzxd_helper.exe) || true
+          (command -v objdump >/dev/null && objdump -p src/lzxd_helper.exe | grep -E "DLL Name") || true
 
       - name: PyInstaller bundle
         shell: bash

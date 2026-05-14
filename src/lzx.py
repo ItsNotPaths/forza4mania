@@ -136,12 +136,16 @@ _HDR = struct.Struct(">II")
 
 def _spawn_daemon() -> subprocess.Popen:
     helper = helper_path()
+    # Capture stderr to a PIPE instead of letting it inherit the parent's
+    # (which is /dev/null under PyInstaller --windowed). When the helper
+    # dies on startup — missing DLL, libmspack init failure, etc. — its
+    # error message lives in this pipe and gets surfaced by decode_lzx.
     proc = subprocess.Popen(
         [str(helper), "daemon"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=None,                # let the user see helper diagnostics
-        bufsize=0,                  # we manage buffering ourselves
+        stderr=subprocess.PIPE,
+        bufsize=0,
     )
     if proc.stdin is None or proc.stdout is None:
         raise DecompressionError("failed to attach pipes to lzxd_helper daemon")
@@ -207,13 +211,26 @@ def decode_lzx(stream: bytes, out_len: int) -> bytes:
             status, payload_len = _HDR.unpack(hdr)
             payload = _read_exact(proc.stdout, payload_len)
         except (BrokenPipeError, DecompressionError):
-            # Helper crashed or closed. Reap and surface the error.
+            # Helper crashed or closed. Drain its stderr so the user sees
+            # WHY (missing DLL, libmspack init failure, bad chunk header, ...)
+            # before we kill the process and re-raise.
+            stderr_blob = b""
+            if proc.stderr is not None:
+                try:
+                    stderr_blob = proc.stderr.read() or b""
+                except Exception:
+                    pass
             try:
                 proc.kill()
             except Exception:
                 pass
+            rc = proc.poll()
             _daemon_proc = None
-            raise DecompressionError("lzxd_helper daemon died mid-request")
+            stderr_msg = stderr_blob.decode("utf-8", errors="replace").strip()
+            raise DecompressionError(
+                f"lzxd_helper daemon died mid-request (exit={rc}). "
+                f"helper stderr: {stderr_msg!r}"
+            )
 
         if status != 0:
             raise DecompressionError(
