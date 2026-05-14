@@ -38,6 +38,11 @@
 #include <unistd.h>
 #include <sys/types.h>
 
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#endif
+
 #include <system.h>
 #include <lzx.h>
 
@@ -213,6 +218,18 @@ static int run_daemon(int wbits, int reset) {
     unsigned char *in = NULL, *out = NULL;
     size_t in_cap = 0, out_cap = 0;
     char err[256];
+
+#ifdef _WIN32
+    /* Windows CRT defaults stdin/stdout to TEXT mode, which silently
+     * strips 0x0D bytes from binary streams (CR removal as part of
+     * CRLF translation). LZX bitstreams contain plenty of those, so
+     * without explicit binary mode we get truncated body reads and
+     * fail with "short read on body". Same for stdout — if the
+     * decompressed payload happens to contain 0x0A, mode-text would
+     * turn it into 0x0D 0x0A and break the framing. */
+    _setmode(_fileno(stdin),  _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
 
     for (;;) {
         int rs = read_full(0, hdr, sizeof(hdr));
