@@ -25,14 +25,28 @@ def find_blender(override: Path | None = None) -> Path:
 
     Steam Blender on Linux installs at .../SteamLibrary/steamapps/common/Blender/blender;
     other paths can be supplied via ``override`` (Settings UI feeds this).
+
+    Wine quirk: if we're running on Windows-Python (likely under Wine) and
+    the configured/detected blender path lacks a .exe suffix, the binary is
+    almost certainly a Linux ELF and CreateProcess will reject it with
+    WinError 6. Refuse loudly with an actionable error instead of letting
+    the user chase a misleading subprocess failure.
     """
     if override is not None:
         p = Path(override)
         if not p.is_file():
             raise FileNotFoundError(f"blender override path does not exist: {p}")
+        _check_blender_is_windows_compatible(p)
         return p
 
     candidates = [
+        # Windows installs first — under Wine these are the only ones that
+        # can actually run.
+        Path("C:/Program Files/Blender Foundation/Blender 5.1/blender.exe"),
+        Path("C:/Program Files/Blender Foundation/Blender 5.0/blender.exe"),
+        Path("C:/Program Files/Blender Foundation/Blender 4.5/blender.exe"),
+        # Linux installs — fine when our Tk app is running on real Linux,
+        # not when running under Wine.
         Path("/run/media/paths/SSS-Games/SteamLibrary/steamapps/common/Blender/blender"),
         Path.home() / ".steam/steam/steamapps/common/Blender/blender",
         Path("/usr/bin/blender"),
@@ -40,16 +54,34 @@ def find_blender(override: Path | None = None) -> Path:
     ]
     for c in candidates:
         if c.is_file():
+            _check_blender_is_windows_compatible(c)
             return c
 
     import shutil
-    found = shutil.which("blender")
+    found = shutil.which("blender") or shutil.which("blender.exe")
     if found:
-        return Path(found)
+        p = Path(found)
+        _check_blender_is_windows_compatible(p)
+        return p
 
     raise FileNotFoundError(
-        "Blender not found. Set the override path in Settings or install Steam Blender."
+        "Blender not found. Set the override path in Settings or install Blender."
     )
+
+
+def _check_blender_is_windows_compatible(p: Path) -> None:
+    """Refuse a Linux ELF Blender when we're running on Windows-Python.
+
+    Under Wine, calling CreateProcess on an ELF binary fails with WinError
+    6. Catching it here gives a clear error pointing at Settings.
+    """
+    if sys.platform == "win32" and p.suffix.lower() != ".exe":
+        raise RuntimeError(
+            f"blender path {p} is not a Windows .exe. "
+            "Under Wine/Proton you need a Blender for Windows install — "
+            "download from blender.org, extract, and point Settings → "
+            "Blender executable at blender.exe."
+        )
 
 
 def dump_chunk(
