@@ -43,9 +43,13 @@ def write_mesh_params(
 
     materials_block = "\n".join(rows) if rows else ""
 
+    # Collection is "Stadium" — NadeoImporter's library uses the short
+    # environment name. "Stadium2020" is the in-game env identifier the
+    # dotnet helper uses when composing maps; the importer's library
+    # rejects it ("collection : 'Stadium2020' not found").
     xml = (
         '<?xml version="1.0" ?>\n'
-        f'<MeshParams Scale="{scale}" MeshType="Static" Collection="Stadium2020" '
+        f'<MeshParams Scale="{scale}" MeshType="Static" Collection="Stadium" '
         f'FbxFile="{_escape(fbx_path.name)}">\n'
         '    <Materials>\n'
         f'{materials_block}\n'
@@ -75,7 +79,7 @@ def write_item_xml(
 
     xml = (
         '<?xml version="1.0" ?>\n'
-        f'<Item AuthorName="{_escape(author)}" Collection="Stadium2020" Type="StaticObject">\n'
+        f'<Item AuthorName="{_escape(author)}" Collection="Stadium" Type="StaticObject">\n'
         '    <MeshParamsLink '
         f'File="{_escape(meshparams_filename)}" />\n'
         '    <Phy/>\n'

@@ -204,6 +204,44 @@ class ConvertTab:
         self.status_var.set(s)
         self.app.log(f"[ui] {s}")
 
+    def _resolve_user_dir_from_nadeo_ini(self) -> Path | None:
+        """Parse Nadeo.ini's UserDir and expand the {userdocs} token.
+
+        This guarantees our intermediate FBX/XML paths land in the same
+        physical dir NadeoImporter resolves them against — sidestepping
+        all the Wine-path-mangling pitfalls of trusting our own setting.
+        """
+        tm_install = self.app.settings.tm_install_dir
+        if not tm_install:
+            return None
+        ini_path = Path(tm_install) / "Nadeo.ini"
+        if not ini_path.is_file():
+            return None
+        try:
+            for line in ini_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line.lower().startswith("userdir"):
+                    continue
+                _, _, raw = line.partition("=")
+                raw = raw.strip()
+                # {userdocs} → user's "My Documents". On Wine that's
+                # C:\users\steamuser\Documents (a Wine-side path that
+                # both we and NadeoImporter address the same way).
+                if "{userdocs}" in raw:
+                    if sys.platform == "win32":
+                        raw = raw.replace("{userdocs}", "C:\\users\\steamuser\\Documents")
+                    else:
+                        raw = raw.replace("{userdocs}", str(Path.home() / "Documents"))
+                resolved = Path(raw.replace("\\", "/"))
+                if resolved.is_dir():
+                    return resolved
+                # Fall back to the Wine prefix variant if a Windows-style
+                # path doesn't exist on Linux (dev mode).
+                return resolved
+        except OSError:
+            pass
+        return None
+
     def _export_checked(self) -> None:
         checked = [name for name, v in self.track_vars.items() if v.get()]
         if not checked:
@@ -255,7 +293,18 @@ class ConvertTab:
         from xml_writers import write_item_xml, write_mesh_params
 
         ribbon_dir = track_dir / ribbon
-        out_root = Path(self.app.settings.tm_user_dir or str(Path.home() / "forzamania-out"))
+
+        # Resolve out_root by reading Nadeo.ini if available — that's the
+        # ONE source NadeoImporter agrees with. Trusting our own settings
+        # field has bitten us with stale in-memory values + Wine path
+        # mangling. Nadeo.ini's UserDir uses {userdocs} which Wine
+        # resolves to C:\users\steamuser\Documents (the canonical location
+        # both we and NadeoImporter can write to and read from).
+        out_root = self._resolve_user_dir_from_nadeo_ini() or Path(
+            self.app.settings.tm_user_dir or str(Path.home() / "forzamania-out")
+        )
+        self.app.log(f"      using TM user dir: {out_root}")
+
         # Intermediate: FBX + XML + textures live inside <userdir>/Work/...
         # because NadeoImporter resolves its path argument relative to that
         # Work/ dir. Final .Item.Gbx gets moved to <userdir>/Items/... after
