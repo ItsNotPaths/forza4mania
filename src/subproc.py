@@ -32,6 +32,21 @@ import tempfile
 from pathlib import Path
 
 
+# Window-hide flags so each subprocess spawn doesn't pop a transient
+# console window (i3 / Sway / floating WMs particularly hate this — 119
+# chunks × 3 spawns each = ~357 window flashes per run).
+# These flags affect display only, not handle inheritance — they're safe
+# to use everywhere (including Wine), unlike CREATE_NO_WINDOW which broke
+# things earlier under PyInstaller --windowed.
+def _hidden_startupinfo() -> "subprocess.STARTUPINFO | None":
+    if sys.platform != "win32":
+        return None
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
+    return si
+
+
 def run_captured(
     cmd: list[str],
     *,
@@ -66,6 +81,7 @@ def run_captured(
                 stdin=subprocess.PIPE,
                 stdout=out_w,
                 stderr=err_w,
+                startupinfo=_hidden_startupinfo(),
             )
             # Don't keep stdin open — child sees EOF immediately. Avoids
             # the DEVNULL handle that Wine rejects.
@@ -119,4 +135,5 @@ def popen_pipes(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE if capture_stderr else None,
         bufsize=bufsize,
+        startupinfo=_hidden_startupinfo(),
     )

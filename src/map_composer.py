@@ -149,15 +149,18 @@ def compose_map(
 
     items_payload = []
     for it in placed_items:
+        # Empty strings for the enum fields make the dotnet helper bail
+        # with "Unable to parse '' as a value of EPhaseOffset" — defaults
+        # come from vendor/blendermania-addon/utils/Dotnet.py:29-66.
         items_payload.append({
             "Name": it.name,
             "Path": str(it.item_gbx_path),
             "Position": _to_dotnet_vector3(it.position_xyz),
             "Rotation": _to_dotnet_vector3(it.rotation_xyz),
             "Pivot": _to_dotnet_vector3((0.0, 0.0, 0.0)),
-            "AnimPhaseOffset": "",
-            "DifficultyColor": "",
-            "LightmapQuality": "",
+            "AnimPhaseOffset": "None",
+            "DifficultyColor": "Default",
+            "LightmapQuality": "Normal",
         })
 
     blocks_payload = compute_ground_block_grid(placed_items, block_name=block_name)
