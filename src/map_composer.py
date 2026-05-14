@@ -39,9 +39,17 @@ BLOCK_GRID_Y_OFFSET = 9  # cells, per addon
 class PlacedItem:
     """One item placement in the composed map.
 
-    Position is in TM world units (meters). Path is the absolute Item.Gbx
-    location in the user's TM Documents/Items/ folder; the dotnet helper
-    embeds a path-only reference into the map (no embed-by-content in v1).
+    `name` MUST be the path of the item relative to ``<userdir>/Items/``,
+    including subdirs and the ``.Item.Gbx`` extension. Example:
+    ``"Forzamania/Alps/Alps_Tile_n010_p001_00.Item.Gbx"``. TM2020 uses
+    this string as the lookup key against its item library — passing just
+    the stem produces "missing item" errors at map load.
+
+    See vendor/blendermania-addon/utils/MapObjects.py:202-211 for the
+    canonical convention.
+
+    `item_gbx_path` is the absolute path on disk (the dotnet helper uses
+    it for the initial item ingestion).
     """
     name: str
     item_gbx_path: Path
@@ -58,8 +66,18 @@ def _to_dotnet_int3(xyz: tuple[int, int, int]) -> dict:
     return {"X": int(xyz[0]), "Y": int(xyz[1]), "Z": int(xyz[2])}
 
 
-def chunk_to_placed_item(chunk: MeshChunk, item_gbx_path: Path) -> PlacedItem:
+def chunk_to_placed_item(
+    chunk: MeshChunk,
+    item_gbx_path: Path,
+    items_rel_path: str,
+) -> PlacedItem:
     """Lift one chunk + its NadeoImporter output into a PlacedItem.
+
+    `items_rel_path` is the item's path relative to ``<userdir>/Items/``
+    with forward slashes and the ``.Item.Gbx`` extension — e.g.
+    ``"Forzamania/Alps/Alps_Tile_n010_p001_00.Item.Gbx"``. This is the
+    string TM2020 looks the item up by; the caller computes it because
+    only it knows the items_root layout.
 
     Position uses the chunk's bbox center for stability — items in a
     composed map sit at their named anchor, and centering avoids surprise
@@ -84,7 +102,7 @@ def chunk_to_placed_item(chunk: MeshChunk, item_gbx_path: Path) -> PlacedItem:
     tm_z = fx
 
     return PlacedItem(
-        name=chunk.name,
+        name=items_rel_path,
         item_gbx_path=Path(item_gbx_path),
         position_xyz=(tm_x, tm_y, tm_z),
     )

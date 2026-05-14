@@ -637,7 +637,11 @@ class ConvertTab:
             chunk = chunks_by_name.get(chunk_name)
             if chunk is None:
                 continue
-            placed.append(chunk_to_placed_item(chunk, gbx))
+            # TM2020 looks items up by their path relative to <userdir>/Items/,
+            # forward-slashed, with the .Item.Gbx extension. Our items live at
+            # <userdir>/Items/Forzamania/<track>/<chunk>.Item.Gbx.
+            items_rel = f"Forzamania/{track_dir.name}/{gbx.name}"
+            placed.append(chunk_to_placed_item(chunk, gbx, items_rel))
 
         result = compose_map(
             dotnet, seed_map, out_map, placed,
@@ -698,14 +702,34 @@ class ConvertTab:
         # need the mesh/shape too even though only Item.Gbx is referenced
         # by the map (depends on whether Items are embedded by reference
         # or value).
+        # Normalize destination filenames to PascalCase Gbx (.Item.Gbx,
+        # .Mesh.Gbx, .Shape.Gbx). NadeoImporter writes lowercase under
+        # Wine; the map composer references PascalCase. On case-sensitive
+        # Linux ext4 (TM2020's actual filesystem), they don't match and
+        # TM reports "missing item". Renaming on read-into-write here
+        # sidesteps Wine's case-insensitivity quirk inline.
+        SUFFIX_NORMALIZE = {
+            ".item.gbx": ".Item.Gbx",
+            ".mesh.gbx": ".Mesh.Gbx",
+            ".shape.gbx": ".Shape.Gbx",
+            ".item.Gbx": ".Item.Gbx",
+            ".mesh.Gbx": ".Mesh.Gbx",
+            ".shape.Gbx": ".Shape.Gbx",
+        }
         copied = 0
         for src in items_root.iterdir():
             if not src.is_file():
                 continue
             low = src.name.lower()
-            if not (low.endswith(".item.gbx") or low.endswith(".mesh.gbx") or low.endswith(".shape.gbx")):
-                continue
-            dst = dst_items / src.name
+            normalized_name = src.name
+            for suf, canon in SUFFIX_NORMALIZE.items():
+                if src.name.endswith(suf):
+                    normalized_name = src.name[: -len(suf)] + canon
+                    break
+            else:
+                if not (low.endswith(".item.gbx") or low.endswith(".mesh.gbx") or low.endswith(".shape.gbx")):
+                    continue
+            dst = dst_items / normalized_name
             try:
                 dst.write_bytes(src.read_bytes())
                 copied += 1
