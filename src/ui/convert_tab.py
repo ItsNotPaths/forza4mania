@@ -360,7 +360,11 @@ class ConvertTab:
             json_path = work_items_root / f"{chunk.name}.chunk.json"
             dump_chunk(chunk, ir, mats, fbx_path, json_path)
             try:
-                export_chunk_to_fbx(json_path, blender, export_script, timeout=900.0)
+                # 180s per chunk — generous for ~50k-tri FBX serialisation.
+                # The hang risk from lightmap_pack is gone (we now use a
+                # synthetic grid layout in _add_lightmap_uv), so the floor
+                # is just Blender startup + FBX writing.
+                export_chunk_to_fbx(json_path, blender, export_script, timeout=180.0)
             except Exception as e:
                 log(f"      [!] export failed: {type(e).__name__}: {e}")
                 # Full traceback for the FIRST failure of the run only — past

@@ -132,72 +132,57 @@ def _build_consolidated_mesh(name: str, chunk: dict) -> bpy.types.Object:
 
 
 def _add_lightmap_uv(obj: bpy.types.Object) -> None:
-    """Add a non-overlapping LightMap UV layer.
+    """Add a non-overlapping LightMap UV layer via a synthetic grid layout.
 
     NadeoImporter requires every material to have at least 2 UV layers
     (``BaseMaterial`` + ``LightMap``); without it, mesh import fails with
-    "not enough UvLayers for material (1 < 2)". The LightMap UV needs to
-    be non-overlapping per face so the in-game lightmap baker can give
-    each face unique pixels.
+    "not enough UvLayers for material (1 < 2)". The LightMap UV must be
+    non-overlapping per face so TM's lightmap baker can give each face
+    unique pixels.
 
-    Strategy (in order of preference):
-      1. ``uv.lightmap_pack`` — purpose-built op, fast on big meshes.
-      2. ``uv.smart_project`` — slower but more universally available.
-      3. Clone ``BaseMaterial`` UVs into ``LightMap``. Lightmap will
-         have overlap artifacts but the FBX still passes the importer.
+    We DON'T use ``bpy.ops.uv.lightmap_pack`` or ``smart_project`` because
+    both run an island-packing algorithm that scales poorly on FM4-derived
+    geometry — chunks with thousands of disconnected face islands (one
+    per baked instance, plus many degenerate triangles) make the packers
+    spin for many minutes or hang outright.
+
+    Instead, lay every face out in a regular ``G×G`` grid where
+    ``G = ceil(sqrt(face_count))``. Each face gets its own cell with a
+    small margin to avoid bleed. The lightmap will be approximately
+    uniform per face (one cell baked to one solid colour), which is the
+    right trade-off for FM4 scenery items: pure arithmetic, microseconds
+    on any mesh size, no hang risk.
     """
     mesh = obj.data
     mesh.uv_layers.new(name="LightMap")
+    light = mesh.uv_layers["LightMap"]
 
-    # Make obj the active selection — bpy.ops.uv.* operators need this
-    bpy.context.view_layer.objects.active = obj
-    obj.select_set(True)
+    n_faces = len(mesh.polygons)
+    if n_faces == 0:
+        print("  lightmap: empty mesh, skipping", flush=True)
+        return
 
-    # Mark LightMap as the active UV layer so the unwrap writes there
-    for i, layer in enumerate(mesh.uv_layers):
-        if layer.name == "LightMap":
-            mesh.uv_layers.active_index = i
-            break
+    grid = max(1, math.ceil(math.sqrt(n_faces)))
+    cell = 1.0 / grid
+    margin = cell * 0.05         # 5% gutter — keeps the baker from bleeding
+    inner = cell - 2 * margin
 
-    unwrap_ok = False
-    try:
-        bpy.ops.object.mode_set(mode="EDIT")
-        bpy.ops.mesh.select_all(action="SELECT")
-        try:
-            bpy.ops.uv.lightmap_pack(
-                PREF_CONTEXT="ALL_FACES",
-                PREF_PACK_IN_ONE=True,
-                PREF_NEW_UVLAYER=False,
-                PREF_APPLY_IMAGE=False,
-                PREF_IMG_PX_SIZE=1024,
-                PREF_BOX_DIV=12,
-                PREF_MARGIN_DIV=0.1,
-            )
-            unwrap_ok = True
-        except Exception:
-            try:
-                bpy.ops.uv.smart_project(
-                    angle_limit=66.0,
-                    island_margin=0.02,
-                    area_weight=0.0,
-                )
-                unwrap_ok = True
-            except Exception:
-                pass
-    finally:
-        try:
-            bpy.ops.object.mode_set(mode="OBJECT")
-        except Exception:
-            pass
+    print(f"  lightmap: {n_faces} faces → {grid}×{grid} grid, cell={cell:.4f}", flush=True)
 
-    if not unwrap_ok:
-        # Fallback: copy BaseMaterial → LightMap so we at least pass the
-        # importer's UV-layer-count check. Visual lighting will be wrong.
-        base = mesh.uv_layers.get("BaseMaterial")
-        light = mesh.uv_layers.get("LightMap")
-        if base is not None and light is not None:
-            for i in range(len(base.data)):
-                light.data[i].uv = base.data[i].uv
+    for face_i, poly in enumerate(mesh.polygons):
+        cx = (face_i % grid) * cell
+        cy = (face_i // grid) * cell
+        # 4 cell corners (CCW). Triangles use 3, quads use 4, n-gons cycle.
+        # Each loop gets its own corner so the face has area in UV space —
+        # required for the baker to produce useful samples.
+        corners = (
+            (cx + margin,         cy + margin),
+            (cx + margin + inner, cy + margin),
+            (cx + margin + inner, cy + margin + inner),
+            (cx + margin,         cy + margin + inner),
+        )
+        for li_idx, li in enumerate(poly.loop_indices):
+            light.data[li].uv = corners[li_idx % 4]
 
     # Restore BaseMaterial as the active UV layer — Blender's FBX exporter
     # writes the active layer first, and NadeoImporter wants BaseMaterial

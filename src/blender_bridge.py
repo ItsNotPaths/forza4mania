@@ -145,7 +145,7 @@ def export_chunk_to_fbx(
     chunk_json: Path,
     blender_path: Path,
     blender_export_script: Path,
-    timeout: float = 600.0,
+    timeout: float = 180.0,
 ) -> None:
     """Spawn headless Blender to consume chunk_json and write the FBX.
 
