@@ -479,21 +479,44 @@ class ConvertTab:
             if not item_res.ok:
                 _log_full("item step", fbx.name, item_res)
                 continue
-            # NadeoImporter writes the .Item.Gbx (and .Mesh.Gbx, .Shape.Gbx)
-            # next to the FBX inside Work/. TM2020's in-game item editor
-            # only sees what's inside <userdir>/Items/, so move the final
-            # GBXs there. We keep the .fbx + xml in Work/ as the audit trail.
-            item_gbx_in_work = fbx.with_suffix(".Item.Gbx")
-            if not item_gbx_in_work.is_file():
+
+            # NadeoImporter writes outputs into <userdir>/Items/<same path>/,
+            # NOT next to the FBX in Work/, AND uses lowercase extensions
+            # (.item.gbx etc.). Look in BOTH locations and accept either
+            # case so we work with both old and new NadeoImporter behavior.
+            stem = fbx.stem
+            stem_only = stem
+            search_dirs = [items_root, fbx.parent]
+            item_gbx_found: Path | None = None
+            for d in search_dirs:
+                for name in (f"{stem_only}.Item.Gbx", f"{stem_only}.item.gbx",
+                             f"{stem_only}.Item.gbx"):
+                    candidate = d / name
+                    if candidate.is_file():
+                        item_gbx_found = candidate
+                        break
+                if item_gbx_found is not None:
+                    break
+
+            if item_gbx_found is None:
+                # Mesh/Item rc=0 but no output file exists anywhere we know
+                # to look. Log the search paths so future debugging isn't blind.
+                log(
+                    f"      [!] {fbx.name}: rc=0 from both steps but no .Item.Gbx in "
+                    f"{[str(d) for d in search_dirs]}"
+                )
                 continue
-            item_gbx_dst = items_root / item_gbx_in_work.name
-            try:
-                if item_gbx_dst.exists():
-                    item_gbx_dst.unlink()
-                item_gbx_in_work.rename(item_gbx_dst)
-            except OSError as e:
-                log(f"      [!] move {item_gbx_in_work.name} → Items/ failed: {e}")
-                continue
+
+            # Normalize to canonical PascalCase + ensure it lives in items_root.
+            item_gbx_dst = items_root / f"{stem_only}.Item.Gbx"
+            if item_gbx_found != item_gbx_dst:
+                try:
+                    if item_gbx_dst.exists():
+                        item_gbx_dst.unlink()
+                    item_gbx_found.rename(item_gbx_dst)
+                except OSError as e:
+                    log(f"      [!] move {item_gbx_found} → {item_gbx_dst} failed: {e}")
+                    continue
             item_gbx_paths.append(item_gbx_dst)
 
         log(f"      {len(item_gbx_paths)} of {len(fbx_paths)} items converted")
