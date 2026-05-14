@@ -75,44 +75,29 @@ def _to_dotnet_int3(xyz: tuple[int, int, int]) -> dict:
 
 
 def chunk_to_placed_item(
-    chunk: MeshChunk,
     item_gbx_path: Path,
     items_rel_path: str,
+    center_xyz: tuple[float, float, float],
 ) -> PlacedItem:
-    """Lift one chunk + its NadeoImporter output into a PlacedItem.
+    """Lift one converted chunk into a PlacedItem.
 
     `items_rel_path` is the item's path relative to ``<userdir>/Items/``
     with forward slashes and the ``.Item.Gbx`` extension — e.g.
     ``"Forzamania/Alps/Alps_Tile_n010_p001_00.Item.Gbx"``. This is the
-    string TM2020 looks the item up by; the caller computes it because
-    only it knows the items_root layout.
+    string TM2020 looks the item up by.
 
-    Position uses the chunk's bbox center for stability — items in a
-    composed map sit at their named anchor, and centering avoids surprise
-    offsets when the same chunk gets re-exported with slightly different
-    bounds.
-
-    Coordinate mapping mirrors the addon (MapObjects.py:218):
-      Forza X → TM Z
-      Forza Y → TM Y (+ITEM_POSITION_Y_OFFSET)
-      Forza Z → TM X
-    The Y/Z swap matches the FORZA_TO_TRACKMANIA basis flip we apply at
-    Blender export time, keeping Forza Y-up content vertical in TM.
+    `center_xyz` is the item's world position in TM-space — the bbox
+    centre that blender_export re-centred the mesh on (read back from the
+    ``.center.json`` sidecar). Since the item geometry is now LOCAL (verts
+    around its own origin), placing it here puts it back at its true
+    world location. No Y/Z swap or Y-offset here: blender_export already
+    emitted the centre in TM-space (post FORZA_TO_TRACKMANIA), and the
+    ground-clearance lift happens once in compose_map.
     """
-    if chunk.bbox_min is None or chunk.bbox_max is None:
-        center = np.zeros(3, dtype=np.float32)
-    else:
-        center = (chunk.bbox_min + chunk.bbox_max) * 0.5
-
-    fx, fy, fz = float(center[0]), float(center[1]), float(center[2])
-    tm_x = fz
-    tm_y = fy + ITEM_POSITION_Y_OFFSET
-    tm_z = fx
-
     return PlacedItem(
         name=items_rel_path,
         item_gbx_path=Path(item_gbx_path),
-        position_xyz=(tm_x, tm_y, tm_z),
+        position_xyz=(float(center_xyz[0]), float(center_xyz[1]), float(center_xyz[2])),
     )
 
 

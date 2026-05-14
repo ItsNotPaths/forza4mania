@@ -630,6 +630,7 @@ class ConvertTab:
         maps_root.mkdir(parents=True, exist_ok=True)
         out_map = maps_root / f"{track_dir.name}.Map.Gbx"
 
+        import json as _json
         placed = []
         chunks_by_name = {c.name: c for c in chunks}
         for gbx in item_gbx_paths:
@@ -641,7 +642,17 @@ class ConvertTab:
             # forward-slashed, with the .Item.Gbx extension. Our items live at
             # <userdir>/Items/Forzamania/<track>/<chunk>.Item.Gbx.
             items_rel = f"Forzamania/{track_dir.name}/{gbx.name}"
-            placed.append(chunk_to_placed_item(chunk, gbx, items_rel))
+            # blender_export re-centred the item mesh on its bbox centre and
+            # wrote that centre (TM-space) to <chunk>.center.json next to the
+            # FBX. Use it as the placement position so the now-local-space
+            # item renders back at its true world location.
+            center_path = work_items_root / f"{chunk_name}.center.json"
+            try:
+                center = tuple(_json.loads(center_path.read_text())["center"])
+            except (OSError, ValueError, KeyError):
+                log(f"      [!] {chunk_name}: no center sidecar, placing at origin")
+                center = (0.0, 0.0, 0.0)
+            placed.append(chunk_to_placed_item(gbx, items_rel, center))
 
         result = compose_map(
             dotnet, seed_map, out_map, placed,
