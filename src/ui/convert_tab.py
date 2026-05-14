@@ -36,14 +36,24 @@ def _exe_dir() -> Path:
 
 
 def _find_seed_map() -> Path | None:
-    """Locate empty_stadium.Map.Gbx — user-droppable next to .exe wins, then
-    fall back to whatever was baked into the bundle."""
-    for candidate in (
-        _exe_dir() / "assets" / "empty_stadium.Map.Gbx",
-        _bundle_root() / "assets" / "empty_stadium.Map.Gbx",
-    ):
-        if candidate.is_file():
-            return candidate
+    """Locate any blank ``*.Map.Gbx`` to use as the map composer's seed.
+
+    Search order: ``<exe>/assets/`` (user-droppable wins) then the bundled
+    ``<MEIPASS>/assets/``. Any file matching ``*.Map.Gbx`` is acceptable —
+    users can drop in whatever blank stadium map they exported from TM2020;
+    the dotnet helper just opens-and-modifies the file we hand it.
+    """
+    for d in (_exe_dir() / "assets", _bundle_root() / "assets"):
+        if not d.is_dir():
+            continue
+        # Prefer a file literally named empty_stadium.Map.Gbx if present;
+        # otherwise pick the first .Map.Gbx alphabetically (deterministic).
+        canonical = d / "empty_stadium.Map.Gbx"
+        if canonical.is_file():
+            return canonical
+        for candidate in sorted(d.glob("*.Map.Gbx")):
+            if candidate.is_file():
+                return candidate
     return None
 
 
@@ -571,4 +581,14 @@ class ConvertTab:
         if result.ok:
             log(f"[done] map written: {out_map}")
         else:
-            log(f"[!] map compose failed ({result.explanation}): {result.stderr.strip()[:300]}")
+            # Like NadeoImporter, the dotnet helper writes most of its
+            # diagnostics to stdout, not stderr. Show both, plus the JSON
+            # config path so we can re-run it manually if needed.
+            log(f"[!] map compose failed ({result.explanation}, rc={result.returncode})")
+            log(f"      ---- compose stdout ----")
+            for line in (result.stdout or "").splitlines()[:40]:
+                log(f"      {line}")
+            log(f"      ---- compose stderr ----")
+            for line in (result.stderr or "").splitlines()[:40]:
+                log(f"      {line}")
+            log(f"      ---- end ----")
