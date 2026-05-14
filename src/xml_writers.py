@@ -37,8 +37,14 @@ def write_mesh_params(
         attrs = [f'Name="{_escape(m.name)}"', f'Link="{_escape(m.link)}"']
         if m.physics_id:
             attrs.append(f'PhysicsId="{_escape(m.physics_id)}"')
-        if m.base_texture:
-            attrs.append(f'BaseTexture="{_escape(m.base_texture)}"')
+        # NO BaseTexture for TM2020. The blendermania-addon — which is
+        # proven against NadeoImporter — writes BaseTexture only for
+        # Maniaplanet (NadeoXML.py:475-481), never for TM2020/Stadium.
+        # NadeoImporter 2022_07_12 silently aborts (rc=1, empty output)
+        # when it sees BaseTexture on a Stadium material. v1 items use
+        # the stock PlatformTech texture; custom FM4 textures need the
+        # addon's Asset-Library path (registered custom material + DDS in
+        # Items/_BlenderAssets/Textures/), which is a v2 concern.
         rows.append("        <Material " + " ".join(attrs) + " />")
 
     materials_block = "\n".join(rows) if rows else ""
