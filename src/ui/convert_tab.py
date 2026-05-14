@@ -698,37 +698,28 @@ class ConvertTab:
             log(f"[!] mkdir on TM prefix failed: {e}")
             return
 
-        # Copy ALL .Mesh.Gbx, .Shape.Gbx, .Item.Gbx (any case) — TM may
-        # need the mesh/shape too even though only Item.Gbx is referenced
-        # by the map (depends on whether Items are embedded by reference
-        # or value).
-        # Normalize destination filenames to PascalCase Gbx (.Item.Gbx,
-        # .Mesh.Gbx, .Shape.Gbx). NadeoImporter writes lowercase under
-        # Wine; the map composer references PascalCase. On case-sensitive
-        # Linux ext4 (TM2020's actual filesystem), they don't match and
-        # TM reports "missing item". Renaming on read-into-write here
-        # sidesteps Wine's case-insensitivity quirk inline.
-        SUFFIX_NORMALIZE = {
-            ".item.gbx": ".Item.Gbx",
-            ".mesh.gbx": ".Mesh.Gbx",
-            ".shape.gbx": ".Shape.Gbx",
-            ".item.Gbx": ".Item.Gbx",
-            ".mesh.Gbx": ".Mesh.Gbx",
-            ".shape.Gbx": ".Shape.Gbx",
-        }
+        # Normalize destination filenames to PascalCase (.Item.Gbx,
+        # .Mesh.Gbx, .Shape.Gbx). NadeoImporter emits inconsistent casing
+        # under Wine — observed: ".Item.gbx" (capital I, lowercase g).
+        # The map composer references ".Item.Gbx" exactly, and TM2020's
+        # filesystem lookup is case-sensitive on Linux ext4 — any mismatch
+        # = "missing item". Match the suffix CASE-INSENSITIVELY (lowercase
+        # the name for comparison) so every casing variant normalizes.
+        CANON = {".item.gbx": ".Item.Gbx",
+                 ".mesh.gbx": ".Mesh.Gbx",
+                 ".shape.gbx": ".Shape.Gbx"}
         copied = 0
         for src in items_root.iterdir():
             if not src.is_file():
                 continue
             low = src.name.lower()
-            normalized_name = src.name
-            for suf, canon in SUFFIX_NORMALIZE.items():
-                if src.name.endswith(suf):
+            normalized_name = None
+            for suf, canon in CANON.items():
+                if low.endswith(suf):
                     normalized_name = src.name[: -len(suf)] + canon
                     break
-            else:
-                if not (low.endswith(".item.gbx") or low.endswith(".mesh.gbx") or low.endswith(".shape.gbx")):
-                    continue
+            if normalized_name is None:
+                continue  # not a gbx output file
             dst = dst_items / normalized_name
             try:
                 dst.write_bytes(src.read_bytes())
