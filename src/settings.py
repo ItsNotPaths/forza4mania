@@ -146,18 +146,38 @@ def _detect_tm_install() -> str | None:
 
 def _detect_tm_user_dir(tm_install: Path) -> str | None:
     """Find ``Documents/Trackmania/`` — on Linux/Proton this is inside the
-    Steam compatdata prefix, not the user's $HOME."""
-    # Steam Linux: Trackmania app id is 2225540
+    Steam compatdata prefix, not the user's $HOME.
+
+    Critical on Wine: this MUST be the same physical location that
+    NadeoImporter resolves ``{userdocs}\\Trackmania`` to (via Nadeo.ini),
+    or the relative paths we hand NadeoImporter will point at the wrong
+    place. Under Proton/Wine that's always
+    ``C:\\users\\steamuser\\Documents\\Trackmania`` (same dir, just the
+    Wine view of the prefix).
+    """
     candidates: list[Path] = []
-    candidates.append(Path.home() / "Documents" / "Trackmania")  # Windows-style
-    # Steam Proton prefix for TM2020
+
+    # Windows-Python (likely running under Wine via PyInstaller): the
+    # canonical Wine path is what NadeoImporter sees from Nadeo.ini's
+    # {userdocs}. Try the Wine-side absolute path first so we match.
+    if sys.platform == "win32":
+        candidates.append(Path("C:/users/steamuser/Documents/Trackmania"))
+
+    candidates.append(Path.home() / "Documents" / "Trackmania")
+
+    # Linux-side fallback: look for the Trackmania compatdata prefix and
+    # walk into its drive_c/users/steamuser/Documents/Trackmania. Try
+    # known TM2020 app ids (2225540 = Trackmania, 2225070 has appeared
+    # too — possibly a regional/edition variant).
     tm_root_idx = str(tm_install).find("steamapps")
     if tm_root_idx > 0:
         steam_root = Path(str(tm_install)[:tm_root_idx])
-        candidates.append(
-            steam_root / "steamapps" / "compatdata" / "2225540" / "pfx"
-            / "drive_c" / "users" / "steamuser" / "Documents" / "Trackmania"
-        )
+        for app_id in ("2225540", "2225070"):
+            candidates.append(
+                steam_root / "steamapps" / "compatdata" / app_id / "pfx"
+                / "drive_c" / "users" / "steamuser" / "Documents" / "Trackmania"
+            )
+
     for c in candidates:
         if c.is_dir():
             return str(c)
