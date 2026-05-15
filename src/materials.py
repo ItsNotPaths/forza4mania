@@ -56,7 +56,13 @@ _CLASSIFIER: list[tuple[tuple[str, ...], str, str]] = [
     (("road_", "rdline_", "rdedg_", "rddet_", "shldr_"), "RoadTech", "Asphalt"),
     (("barr_",),                                          "TrackWall", "Metal"),
     (("grass_", "lake_"),                                 "Grass", "Grass"),
-    (("tree_", "treebend"),                               "PlatformGrass", "NotCollidable"),
+    # Trees: DecoHill is a real standalone Stadium Link (Grass surface,
+    # DECO category) — visually a grass-toned deco material. PlatformGrass
+    # would seem like the obvious pick from the texture-list doc but
+    # NadeoImporter rejects it with "Material not found in library" —
+    # PlatformGrass only exists as a modifier *prefix* in compound link
+    # names like PlatformGrass_PlatformTech, not on its own.
+    (("tree_", "treebend"),                               "DecoHill", "NotCollidable"),
     (("sign_", "anim_flag", "anim_diff"),                 "PlatformTech", "NotCollidable"),
     # Residual alpha-cutout catcher: FM4's "2sd" suffix tags double-sided
     # alpha-tested materials (foliage cards, fence wire, banner cloth).
