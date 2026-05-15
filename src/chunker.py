@@ -108,6 +108,25 @@ def _mesh_keys_for_instance(track: TrackIR, instance: MeshInstance) -> list[int]
     ]
 
 
+def _skybox_mesh_keys(track: TrackIR) -> set[int]:
+    """Mesh keys whose every material is a sky-family FM4 shader.
+
+    FM4 builds the world's skydome as a single huge inverted sphere with one
+    material whose shader name contains ``sky_`` (Alps: ``sky_diff_1``).
+    Geometrically it spans kilometers and lands at tile (0,-1) under the
+    default 64 m bucket — a single oversized item slot for nothing the
+    player ever interacts with. We exclude it here so it never makes it
+    into a chunk; TM2020 supplies its own skybox via the environment.
+    """
+    sky_keys: set[int] = set()
+    for key, mesh in track.meshes.items():
+        if not mesh.materials:
+            continue
+        if all("sky_" in m.shader_name.lower() for m in mesh.materials):
+            sky_keys.add(key)
+    return sky_keys
+
+
 def chunk_track(
     track: TrackIR,
     tile_size_m: float = DEFAULT_TILE_M,
@@ -129,10 +148,17 @@ def chunk_track(
     # Each keepable entry carries the instance, its tri count, its mesh
     # keys, AND its real world-space AABB (lo, hi) — see _instance_world_aabb
     # for why the transform translation alone is not a usable position.
+    sky_keys = _skybox_mesh_keys(track)
     keepable: list[tuple[MeshInstance, int, list[int], np.ndarray, np.ndarray]] = []
     for inst in track.instances:
         keys = _mesh_keys_for_instance(track, inst)
         if not keys:
+            continue
+        # Skip instances whose every referenced mesh is sky. Mixed-material
+        # instances (sky + real geometry — never seen in practice but
+        # theoretically possible) flow through; the sky faces will render
+        # as PlatformTech default and the player's eye will ignore them.
+        if all(k in sky_keys for k in keys):
             continue
         tris = _tri_count_for_instance(track, inst)
         lo, hi = _instance_world_aabb(track, inst, keys)

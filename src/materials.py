@@ -1,14 +1,24 @@
 """Map FM4 materials → TM2020 MeshParams.xml material entries.
 
-v1 is intentionally trivial: every FM4 material becomes a TM2020
-``PlatformTech`` (Asphalt physics, no gameplay zone, custom diffuse texture).
-Visually each material still gets its own FM4-derived .dds via the
-BaseTexture binding — so the track looks like FM4, just with TM2020 lighting
-and uniform asphalt physics.
+Classification is a heuristic on the FM4 shader filename stem. The FM4 art
+pipeline uses shader names like ``road_blnd_trilin_2`` for the main asphalt
+surface, ``barr_shad_diff_spec_1`` for barriers, ``grass_diff_opac_2_2sd``
+for terrain, etc. We bucket those stems onto stock TM2020 Stadium Links so
+the geometry renders with appropriate stock textures and the right
+PhysicsId for collision (Asphalt grippy road, Metal hard wall, Grass
+slow surface, NotCollidable for trees/signs/flags).
 
-Surface variety (asphalt vs grass vs dirt vs kerbs) and gameplay zones
-(boost / reset / wallride) are deferred. Future versions can expand into a
-real heuristic + per-material override UI.
+We use STOCK Stadium Links exclusively — no Custom* / BaseTexture path.
+Custom* Links require a per-user asset-folder install and cap at 14 slots
+total; stock Links resolve to game-shipped textures on every install and
+let us set PhysicsId freely. The visual fidelity loss (no FM4-derived
+diffuse textures) is the trade-off; map shape and surface feel are
+preserved.
+
+The classifier table below is intentionally short. Every FM4 shader in
+Alps (277 unique) classifies into one of 6 buckets — the residual
+~deco bucket covers buildings and generic props, which get default
+Concrete physics so the car actually collides with them.
 """
 from __future__ import annotations
 
@@ -18,8 +28,57 @@ from pathlib import Path
 from fm4.ir import Material as FM4Material
 
 
+# Default for unrecognized FM4 shaders — generic decoration / buildings.
+# Concrete (not NotCollidable) because most FM4 unknown geometry IS solid
+# (buildings, bridge piers, tunnels) and players should crash into it.
 DEFAULT_LINK = "PlatformTech"
-DEFAULT_PHYSICS_ID = "Asphalt"
+DEFAULT_PHYSICS_ID = "Concrete"
+
+
+# Order matters — first match wins. Patterns are tested against the
+# lowercased shader stem (everything after the last slash, dot stripped).
+# Each entry: (substring-test, TM2020 Link, PhysicsId).
+#
+# Roads: TM2020 has RoadTech (main asphalt), RoadDirt, RoadBump, RoadIce —
+# we map every road-family FM4 stem onto RoadTech because FM4 doesn't
+# distinguish surface types in shader names (it varies by .fxobj
+# combination, which we don't decode). The PhysicsId differentiates feel.
+#
+# Barriers: TrackWall is the Stadium-yellow wall texture; visually it's
+# the wrong colour but the right surface type. Metal physics so hits feel
+# right.
+#
+# Trees/signs/flags: NotCollidable so the car drives through them. They
+# stay visually (rendered as flat opaque quads with stock grass/asphalt
+# textures — see scope note about substituting TM2020 stock tree items
+# in a later pass to replace the placeholder quads with real 3D trees).
+_CLASSIFIER: list[tuple[tuple[str, ...], str, str]] = [
+    (("road_", "rdline_", "rdedg_", "rddet_", "shldr_"), "RoadTech", "Asphalt"),
+    (("barr_",),                                          "TrackWall", "Metal"),
+    (("grass_", "lake_"),                                 "Grass", "Grass"),
+    (("tree_", "treebend"),                               "PlatformGrass", "NotCollidable"),
+    (("sign_", "anim_flag", "anim_diff"),                 "PlatformTech", "NotCollidable"),
+    # Residual alpha-cutout catcher: FM4's "2sd" suffix tags double-sided
+    # alpha-tested materials (foliage cards, fence wire, banner cloth).
+    # Without this rule they'd flow to the Concrete default and the car
+    # would crash into invisible-but-solid flat quads where FM4 expected
+    # see-through cutouts. Must come AFTER the road/grass/etc. families
+    # because those legit shaders sometimes carry `_opac_` (e.g.
+    # rdline_blnd_spec_opac_3 — opaque road paint, NOT a cutout).
+    (("_2sd", "_opac_"),                                  "PlatformTech", "NotCollidable"),
+]
+
+
+def _classify_shader(shader_name: str) -> tuple[str, str]:
+    """Return (link, physics_id) for an FM4 shader filename.
+
+    Falls back to DEFAULT_LINK / DEFAULT_PHYSICS_ID when no pattern matches.
+    """
+    s = shader_name.lower()
+    for needles, link, phys in _CLASSIFIER:
+        if any(n in s for n in needles):
+            return link, phys
+    return DEFAULT_LINK, DEFAULT_PHYSICS_ID
 
 
 @dataclass
@@ -57,31 +116,18 @@ def map_material(
 ) -> TM2020Material:
     """Build a TM2020Material for one FM4 material in one chunk.
 
-    `texture_paths` is the {pvs_texture_index: dds_path} returned by
-    textures.extract_track_textures. We pick the first sampler index that
-    has a successfully-extracted .dds; missing textures leave base_texture
-    as None (NadeoImporter will fall back to the stock PlatformTech texture).
-
-    `chunk_dir` is where the FBX + XML will live; BaseTexture must be either
-    absolute, NadeoImporter-relative, or relative to the FBX. We emit
-    a path relative to chunk_dir so the bundle is portable.
+    `texture_paths` and `chunk_dir` are retained for caller-compatibility
+    but unused — TM2020 stock Links resolve to game-shipped textures, so
+    we never bind a custom diffuse here. (Earlier versions emitted
+    BaseTexture for FM4-derived .dds files; NadeoImporter silently aborts
+    on Stadium when BaseTexture is set, so it was removed in commit
+    3c33bac and the texture-extractor output is now unused by the XML
+    pipeline.)
     """
-    base_texture: str | None = None
-    for sampler_idx in fm4_mat.texture_sampler_indices:
-        if sampler_idx < 0:
-            continue
-        dds = texture_paths.get(sampler_idx)
-        if dds is None:
-            continue
-        try:
-            base_texture = str(dds.relative_to(chunk_dir))
-        except ValueError:
-            base_texture = str(dds.resolve())
-        break
-
+    link, physics_id = _classify_shader(fm4_mat.shader_name)
     return TM2020Material(
         name=f"{chunk_name}_{mat_index:03d}_{_safe_name(fm4_mat.shader_name)}",
-        link=DEFAULT_LINK,
-        physics_id=DEFAULT_PHYSICS_ID,
-        base_texture=base_texture,
+        link=link,
+        physics_id=physics_id,
+        base_texture=None,
     )
