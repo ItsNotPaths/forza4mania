@@ -18,13 +18,25 @@ import bpy  # type: ignore
 from mathutils import Matrix  # type: ignore
 
 
-# Forza is Y-up; Trackmania (and Blender's default FBX flow) is Z-up.
-# This mirrors the convention from vendor/Forza-X360-IO/.../blender/ops.py:294.
+# Forza→Trackmania basis change. Forza is Y-up; Blender (and the FBX flow
+# into TM2020) is Z-up. The base conversion is a Y/Z swap — that's the
+# Forza-X360-IO convention (ops.py:294), and it's what makes the geometry
+# read correctly *in Blender*.
+#
+# BUT: a Y/Z-swapped-only track comes into TM2020 yawed 180° — verified
+# with a calibration item (a marked asymmetric shape run through the full
+# pipeline): its +X arm pointed west and its +Z arm pointed south in-game,
+# i.e. both horizontal axes negated. So we fold a 180° yaw (negate the two
+# horizontal axes, X and Forza-Z) into the matrix. Determinant stays −1,
+# so FM4 face winding is unaffected (only a calibration cube with reversed
+# winding looked inside-out; real FM4 geometry winds the other way).
+#
+#   (x, y, z)_forza  ->  (-x, -z, y)_blender
 FORZA_TO_TRACKMANIA = Matrix((
-    (1.0, 0.0, 0.0, 0.0),
-    (0.0, 0.0, 1.0, 0.0),
-    (0.0, 1.0, 0.0, 0.0),
-    (0.0, 0.0, 0.0, 1.0),
+    (-1.0,  0.0,  0.0, 0.0),
+    ( 0.0,  0.0, -1.0, 0.0),
+    ( 0.0,  1.0,  0.0, 0.0),
+    ( 0.0,  0.0,  0.0, 1.0),
 ))
 
 
