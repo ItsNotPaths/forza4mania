@@ -114,6 +114,10 @@ def _build_consolidated_mesh(name: str, chunk: dict) -> tuple[bpy.types.Object, 
                 all_mat_per_face.append(local_to_global_mat[local_mat] if local_mat < len(local_to_global_mat) else 0)
 
     # Re-center: compute the bbox centre, subtract it from every vertex.
+    # all_verts are in Blender-Z-up space here (we applied FORZA_TO_TRACKMANIA,
+    # which is really a Forza-Y-up → Blender-Z-up swap). Centering the mesh
+    # in this space is correct — the mesh gets exported and the FBX exporter
+    # converts Blender-Z-up back to FBX-Y-up, so the item lands Y-up.
     if all_verts:
         xs = [v[0] for v in all_verts]
         ys = [v[1] for v in all_verts]
@@ -124,7 +128,11 @@ def _build_consolidated_mesh(name: str, chunk: dict) -> tuple[bpy.types.Object, 
         all_verts = [(v[0] - cx, v[1] - cy, v[2] - cz) for v in all_verts]
     else:
         cx = cy = cz = 0.0
-    world_center = (cx, cy, cz)
+    # The CENTER we report must be in the item's FINAL coordinate space
+    # (Y-up — what the FBX exporter produces and what TM2020 places in),
+    # NOT Blender-Z-up. FORZA_TO_TRACKMANIA is a pure Y/Z swap, so un-swap
+    # the centre: (cx, cy, cz)_blender → (cx, cz, cy)_Yup.
+    world_center = (cx, cz, cy)
 
     mesh = bpy.data.meshes.new(name=name)
     mesh.from_pydata(all_verts, [], all_faces)
@@ -266,28 +274,23 @@ def main() -> int:
     # location. JSON next to the FBX, same stem.
     center_path = out_fbx_path.with_suffix(".center.json")
     center_path.write_text(json.dumps({"center": list(world_center)}))
+
+    # FBX export args MATCH blendermania-addon/utils/ItemsExport.py:250-256
+    # EXACTLY. That addon's FBX→NadeoImporter path is proven-good; our
+    # earlier custom arg set (explicit axis_forward/axis_up, apply_unit_scale
+    # =True, FBX_SCALE_NONE, object_types filter, etc.) drifted from it and
+    # produced items with subtly-wrong rotation in-game. Everything not
+    # listed here intentionally uses Blender's export defaults — same as
+    # the addon. `use_selection=True` needs the object selected first.
+    for o in bpy.context.scene.objects:
+        o.select_set(False)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
     bpy.ops.export_scene.fbx(
         filepath=str(out_fbx_path),
-        check_existing=False,
-        use_selection=False,
-        use_visible=False,
-        use_active_collection=False,
-        global_scale=1.0,
-        apply_unit_scale=True,
-        apply_scale_options="FBX_SCALE_NONE",
-        bake_space_transform=False,
-        object_types={"MESH"},
-        use_mesh_modifiers=False,
-        mesh_smooth_type="OFF",
-        use_subsurf=False,
-        use_mesh_edges=False,
-        use_tspace=False,
-        use_custom_props=False,
-        path_mode="AUTO",
-        embed_textures=False,
-        batch_mode="OFF",
-        axis_forward="-Z",
-        axis_up="Y",
+        use_selection=True,
+        use_custom_props=True,
+        apply_unit_scale=False,
     )
 
     print(
