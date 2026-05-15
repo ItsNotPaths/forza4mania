@@ -127,6 +127,51 @@ def _skybox_mesh_keys(track: TrackIR) -> set[int]:
     return sky_keys
 
 
+# FM4 cull volumes use one of these shaders, alpha-transparent or color-0
+# so the player never sees them in FM4. In our TM2020 port they'd render
+# as opaque slabs — see LeMans tiles p034_n022/n023, p038_n036, p040_n044
+# for examples: each had a 50-300 m wall blocking the track.
+_CULL_VOLUME_SHADERS = ("diff_opac_2_nolm", "clr_0")
+_CULL_MAX_VERTS = 8        # cull boxes have 4 (quad) or 8 (box) verts
+_CULL_MIN_EXTENT_M = 20.0  # AABB at least 20 m on some axis — anything
+                           # this big with ≤8 verts is definitely a volume
+                           # marker, not real geometry.
+
+
+def _cull_volume_mesh_keys(track: TrackIR) -> set[int]:
+    """Mesh keys for FM4 invisible cull / occlusion volumes.
+
+    Signature: a single low-poly quad or box (verts ≤ 8, faces ≤ 6),
+    huge AABB (≥ 20 m on some axis), using one of FM4's transparent-or-
+    color-only shaders (diff_opac_2_nolm, clr_0). In FM4 these never
+    render because of their material; in TM2020 our heuristic classifier
+    routes them to opaque PlatformTech and they become impassable walls.
+
+    The shader check is necessary: clr_0 and diff_opac_2_nolm are also
+    used for legit thin/long things (banners, track liners with hundreds
+    of verts). The vert+extent guards exclude those legitimate cases.
+    """
+    cull_keys: set[int] = set()
+    for key, mesh in track.meshes.items():
+        if not mesh.materials:
+            continue
+        verts = mesh.vertices
+        if verts.shape[0] == 0 or verts.shape[0] > _CULL_MAX_VERTS:
+            continue
+        extent = verts.max(axis=0) - verts.min(axis=0)
+        if float(extent.max()) < _CULL_MIN_EXTENT_M:
+            continue
+        # Every material on the mesh must be a cull-family shader; mixed-
+        # material meshes are unlikely to be cull volumes.
+        shaders = {
+            m.shader_name.replace("\\", "/").rsplit("/", 1)[-1].lower().rstrip(".fx")
+            for m in mesh.materials
+        }
+        if shaders.issubset(set(_CULL_VOLUME_SHADERS)):
+            cull_keys.add(key)
+    return cull_keys
+
+
 def chunk_track(
     track: TrackIR,
     tile_size_m: float = DEFAULT_TILE_M,
@@ -149,16 +194,20 @@ def chunk_track(
     # keys, AND its real world-space AABB (lo, hi) — see _instance_world_aabb
     # for why the transform translation alone is not a usable position.
     sky_keys = _skybox_mesh_keys(track)
+    cull_keys = _cull_volume_mesh_keys(track)
+    drop_keys = sky_keys | cull_keys
     keepable: list[tuple[MeshInstance, int, list[int], np.ndarray, np.ndarray]] = []
     for inst in track.instances:
         keys = _mesh_keys_for_instance(track, inst)
         if not keys:
             continue
-        # Skip instances whose every referenced mesh is sky. Mixed-material
-        # instances (sky + real geometry — never seen in practice but
-        # theoretically possible) flow through; the sky faces will render
-        # as PlatformTech default and the player's eye will ignore them.
-        if all(k in sky_keys for k in keys):
+        # Skip instances whose every referenced mesh is sky OR a cull-volume
+        # marker (see _skybox_mesh_keys / _cull_volume_mesh_keys). Mixed-
+        # material instances (e.g. sky + real geometry — never seen in
+        # practice but theoretically possible) flow through; the dropped
+        # faces would render as PlatformTech default and the player's eye
+        # would ignore them.
+        if all(k in drop_keys for k in keys):
             continue
         tris = _tri_count_for_instance(track, inst)
         lo, hi = _instance_world_aabb(track, inst, keys)

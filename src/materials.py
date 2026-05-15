@@ -53,24 +53,45 @@ DEFAULT_PHYSICS_ID = "Concrete"
 # textures — see scope note about substituting TM2020 stock tree items
 # in a later pass to replace the placeholder quads with real 3D trees).
 _CLASSIFIER: list[tuple[tuple[str, ...], str, str]] = [
-    (("road_", "rdline_", "rdedg_", "rddet_", "shldr_"), "RoadTech", "Asphalt"),
+    # MAIN ROAD SURFACE — clean asphalt, no lane stripes. FM4 road textures
+    # rarely align with TM's RoadTech stripe pattern, so RoadTech on the
+    # racing line produces visible mismatched stripes "all across the road".
+    # PlatformTech is plain asphalt, no stripes. rdline_ (lane markings) and
+    # rddet_ (road decals/skid marks) sit on TOP of the main road and need
+    # to match it visually, so they go to PlatformTech too.
+    (("road_", "rdline_", "rddet_"),                      "PlatformTech", "Asphalt"),
+    # OFF-TRACK PAVED — kerbs, road edges, paved runoff. RoadTech's stripes
+    # are visually OK here since these are intentional transition zones
+    # with their own texture-edge cues. Keeping the same Asphalt physics
+    # so grip is consistent with the racing line.
+    (("rdedg_", "shldr_"),                                "RoadTech", "Asphalt"),
+    # BARRIERS — TrackWall is Stadium's wall material; we override the
+    # default Wood SurfaceId to Metal so impacts feel more like FM4
+    # guardrails than a wooden fence.
     (("barr_",),                                          "TrackWall", "Metal"),
+    # TERRAIN GRASS / WATER.
     (("grass_", "lake_"),                                 "Grass", "Grass"),
-    # Trees: DecoHill is a real standalone Stadium Link (Grass surface,
-    # DECO category) — visually a grass-toned deco material. PlatformGrass
-    # would seem like the obvious pick from the texture-list doc but
-    # NadeoImporter rejects it with "Material not found in library" —
-    # PlatformGrass only exists as a modifier *prefix* in compound link
-    # names like PlatformGrass_PlatformTech, not on its own.
-    (("tree_", "treebend"),                               "DecoHill", "NotCollidable"),
+    # SAND — defensive matcher for shader stems that explicitly mark sand
+    # surfaces. FM4 tracks aren't always consistent about a `sand_` prefix
+    # (LeMans uses generic terr_/diff_ shaders for sandy runoff). Per-mesh
+    # overrides via the future substitution JSON will handle the cases
+    # where the shader name doesn't carry the surface hint.
+    (("sand_",),                                          "RoadDirt", "Sand"),
+    # PLANTS — trees, bushes, tree-card billboards. All route to DecoHill
+    # (grass-toned deco surface) with NotCollidable physics so the car
+    # drives through them. bush_ and treecard_ added here so they DON'T
+    # fall through to the alpha-cutout catcher below; without these
+    # explicit entries, bush_diff_opac_2_2sd would land on PlatformTech.
+    (("tree_", "treebend", "bush_", "treecard_"),         "DecoHill", "NotCollidable"),
+    # SIGNS, FLAGS, ANIMATED DECO — visible but pass-through.
     (("sign_", "anim_flag", "anim_diff"),                 "PlatformTech", "NotCollidable"),
     # Residual alpha-cutout catcher: FM4's "2sd" suffix tags double-sided
-    # alpha-tested materials (foliage cards, fence wire, banner cloth).
-    # Without this rule they'd flow to the Concrete default and the car
-    # would crash into invisible-but-solid flat quads where FM4 expected
-    # see-through cutouts. Must come AFTER the road/grass/etc. families
-    # because those legit shaders sometimes carry `_opac_` (e.g.
-    # rdline_blnd_spec_opac_3 — opaque road paint, NOT a cutout).
+    # alpha-tested materials (fence wire, banner cloth, foliage cards we
+    # didn't catch above). Without this rule they'd flow to the Concrete
+    # default and the car would crash into invisible-but-solid flat quads
+    # where FM4 expected see-through cutouts. Must come AFTER the road/
+    # grass/plant families — legit road shaders sometimes carry _opac_
+    # (e.g. rdline_blnd_spec_opac_3 = opaque road paint, NOT a cutout).
     (("_2sd", "_opac_"),                                  "PlatformTech", "NotCollidable"),
 ]
 
