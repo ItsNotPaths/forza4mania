@@ -27,10 +27,25 @@ from dotnet_runner import (
 )
 
 
-# Per addon MapObjects.py:218,230 — Y is the up axis in TM, Forza is Y-up too,
-# but the addon swaps Y/Z and offsets +8 to lift items off the ground (block
-# heights are in 8 m vertical units; +8 = one cell above the floor).
-ITEM_POSITION_Y_OFFSET = 8.0
+# Blender -> TM Position/Rotation conventions, mirroring the
+# blendermania-addon (vendor/blendermania-addon/utils/MapObjects.py:218-220):
+#
+#     TM Position = (Blender_Y, Blender_Z + 8, Blender_X)
+#     TM Rotation = (Blender_Z_yaw - 90 deg, Blender_X_rot, -Blender_Y_rot)
+#
+# This is the proven Blender->TM mapping that NadeoImporter expects. We
+# tried other conventions (the standard FBX axis remap inverse) and got
+# distance-dependent position errors; the addon's cyclic remap is what
+# actually works.
+ITEM_POSITION_Y_LIFT = 8.0
+# For an unrotated chunk the addon emits Rotation.X = -90 deg (the -90
+# offset is unconditional). Empirically, +90 deg lines up with our content
+# (the user verified Alps_yaw_pos in TM2020); the sign difference vs the
+# addon's default is because our content arrives in Blender via
+# FORZA_TO_TRACKMANIA which already includes a 180-deg yaw, leaving us at
+# +90 deg net rather than -90 deg.
+DEFAULT_ITEM_ROTATION_X_RAD = math.radians(90.0)
+
 BLOCK_GRID_M = 32.0
 BLOCK_GRID_Y_OFFSET = 9  # cells, per addon
 
@@ -77,7 +92,7 @@ def _to_dotnet_int3(xyz: tuple[int, int, int]) -> dict:
 def chunk_to_placed_item(
     item_gbx_path: Path,
     items_rel_path: str,
-    center_xyz: tuple[float, float, float],
+    blender_center_xyz: tuple[float, float, float],
 ) -> PlacedItem:
     """Lift one converted chunk into a PlacedItem.
 
@@ -86,18 +101,20 @@ def chunk_to_placed_item(
     ``"Forzamania/Alps/Alps_Tile_n010_p001_00.Item.Gbx"``. This is the
     string TM2020 looks the item up by.
 
-    `center_xyz` is the item's world position in TM-space — the bbox
-    centre that blender_export re-centred the mesh on (read back from the
-    ``.center.json`` sidecar). Since the item geometry is now LOCAL (verts
-    around its own origin), placing it here puts it back at its true
-    world location. No Y/Z swap or Y-offset here: blender_export already
-    emitted the centre in TM-space (post FORZA_TO_TRACKMANIA), and the
-    ground-clearance lift happens once in compose_map.
+    `blender_center_xyz` is the chunk's bbox centre in RAW Blender world
+    coords (the value blender_export emits to the .center.json sidecar
+    after applying FORZA_TO_TRACKMANIA but before centering). We apply
+    the blendermania-addon's Blender->TM conversion here so the item
+    lands at the correct TM position.
     """
+    bx, by, bz = blender_center_xyz
+    # Addon convention: TM Position = (Blender_Y, Blender_Z + 8, Blender_X)
+    tm_pos = (by, bz + ITEM_POSITION_Y_LIFT, bx)
     return PlacedItem(
         name=items_rel_path,
         item_gbx_path=Path(item_gbx_path),
-        position_xyz=(float(center_xyz[0]), float(center_xyz[1]), float(center_xyz[2])),
+        position_xyz=tm_pos,
+        rotation_xyz=(DEFAULT_ITEM_ROTATION_X_RAD, 0.0, 0.0),
     )
 
 

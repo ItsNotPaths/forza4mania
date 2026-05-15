@@ -140,11 +140,24 @@ def _build_consolidated_mesh(name: str, chunk: dict) -> tuple[bpy.types.Object, 
         all_verts = [(v[0] - cx, v[1] - cy, v[2] - cz) for v in all_verts]
     else:
         cx = cy = cz = 0.0
-    # The CENTER we report must be in the item's FINAL coordinate space
-    # (Y-up — what the FBX exporter produces and what TM2020 places in),
-    # NOT Blender-Z-up. FORZA_TO_TRACKMANIA is a pure Y/Z swap, so un-swap
-    # the centre: (cx, cy, cz)_blender → (cx, cz, cy)_Yup.
-    world_center = (cx, cz, cy)
+    # The sidecar reports the chunk's bbox center as RAW Blender world
+    # coords. Downstream consumers convert to their target space:
+    #
+    #   map composer (probe_recompose_yawed / map_composer.py):
+    #     applies the blendermania-addon's Blender->TM convention
+    #     (vendor/blendermania-addon/utils/MapObjects.py:218):
+    #         TM Position = (Blender_Y, Blender_Z + 8, Blender_X)
+    #         TM Rotation = (Blender_Z_yaw - 90 deg, 0, 0)
+    #     This is the proven Blender->TM mapping that works with
+    #     NadeoImporter; we'd been using a different one and getting
+    #     positions wrong (errors growing with distance from origin).
+    #
+    #   assembler (scripts/blender_assemble_tm.py):
+    #     places each centered chunk back at its raw Blender world
+    #     position so the .blend visually reconstructs the original
+    #     geometry layout. Plus a per-chunk -90 deg Z rotation to
+    #     visually match the runtime -90 deg item rotation TM applies.
+    world_center = (cx, cy, cz)
 
     mesh = bpy.data.meshes.new(name=name)
     mesh.from_pydata(all_verts, [], all_faces)

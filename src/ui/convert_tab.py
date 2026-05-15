@@ -643,9 +643,9 @@ class ConvertTab:
             # <userdir>/Items/Forzamania/<track>/<chunk>.Item.Gbx.
             items_rel = f"Forzamania/{track_dir.name}/{gbx.name}"
             # blender_export re-centred the item mesh on its bbox centre and
-            # wrote that centre (TM-space) to <chunk>.center.json next to the
-            # FBX. Use it as the placement position so the now-local-space
-            # item renders back at its true world location.
+            # wrote that centre (RAW Blender world coords) to <chunk>.center.json
+            # next to the FBX. chunk_to_placed_item applies the addon's
+            # Blender->TM Position convention so the item lands correctly.
             center_path = work_items_root / f"{chunk_name}.center.json"
             try:
                 center = tuple(_json.loads(center_path.read_text())["center"])
