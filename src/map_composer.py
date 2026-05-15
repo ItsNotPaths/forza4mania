@@ -27,23 +27,22 @@ from dotnet_runner import (
 )
 
 
-# Blender -> TM Position/Rotation conventions, mirroring the
-# blendermania-addon (vendor/blendermania-addon/utils/MapObjects.py:218-220):
+# Blender -> TM Position/Rotation conventions. EMPIRICALLY VERIFIED via
+# user-confirmed `Alps_yaw_pos.Map.Gbx`:
 #
+#     TM Position = (-Blender_Y, Blender_Z + 8, -Blender_X)
+#     TM Rotation.X = +90 deg (per item, unconditional)
+#
+# The blendermania-addon's documented formula (MapObjects.py:218-220) is
 #     TM Position = (Blender_Y, Blender_Z + 8, Blender_X)
-#     TM Rotation = (Blender_Z_yaw - 90 deg, Blender_X_rot, -Blender_Y_rot)
-#
-# This is the proven Blender->TM mapping that NadeoImporter expects. We
-# tried other conventions (the standard FBX axis remap inverse) and got
-# distance-dependent position errors; the addon's cyclic remap is what
-# actually works.
+#     TM Rotation.X = Blender_Z_yaw - 90 deg
+# The negations on TM X and TM Z plus the +90 (vs the addon's -90) cancel
+# the X-mirror and 180-deg yaw that FORZA_TO_TRACKMANIA bakes into our
+# content. A hand-modeled Blender item would use the addon's unmodified
+# formula directly. (Earlier I baked in the addon formula raw and got
+# distance-dependent position errors — the cancellation is required for
+# our content.)
 ITEM_POSITION_Y_LIFT = 8.0
-# For an unrotated chunk the addon emits Rotation.X = -90 deg (the -90
-# offset is unconditional). Empirically, +90 deg lines up with our content
-# (the user verified Alps_yaw_pos in TM2020); the sign difference vs the
-# addon's default is because our content arrives in Blender via
-# FORZA_TO_TRACKMANIA which already includes a 180-deg yaw, leaving us at
-# +90 deg net rather than -90 deg.
 DEFAULT_ITEM_ROTATION_X_RAD = math.radians(90.0)
 
 BLOCK_GRID_M = 32.0
@@ -104,12 +103,14 @@ def chunk_to_placed_item(
     `blender_center_xyz` is the chunk's bbox centre in RAW Blender world
     coords (the value blender_export emits to the .center.json sidecar
     after applying FORZA_TO_TRACKMANIA but before centering). We apply
-    the blendermania-addon's Blender->TM conversion here so the item
+    the empirically-verified Blender->TM conversion here so the item
     lands at the correct TM position.
     """
     bx, by, bz = blender_center_xyz
-    # Addon convention: TM Position = (Blender_Y, Blender_Z + 8, Blender_X)
-    tm_pos = (by, bz + ITEM_POSITION_Y_LIFT, bx)
+    # Empirically verified: TM Position = (-Blender_Y, Blender_Z + 8, -Blender_X)
+    # The negations cancel the X-mirror our FORZA_TO_TRACKMANIA bakes in;
+    # see module-level comment on ITEM_POSITION_Y_LIFT for the full story.
+    tm_pos = (-by, bz + ITEM_POSITION_Y_LIFT, -bx)
     return PlacedItem(
         name=items_rel_path,
         item_gbx_path=Path(item_gbx_path),
@@ -218,9 +219,17 @@ def compose_map(
             "LightmapQuality": "Normal",
         })
 
-    # Block grid is derived from the (already-shifted) item positions, so it
-    # lands in positive space too and stays aligned under the items.
-    blocks_payload = compute_ground_block_grid(shifted_items, block_name=block_name)
+    # Block grid SKIPPED: `StadiumPlatform` is not a valid TM2020 block
+    # name (the dotnet helper silently rejects every one — 0 placed). The
+    # working `Alps_yaw_pos` was composed with Blocks=[] and looked right,
+    # so leaving the ground out is the right call until we know the real
+    # block name. See vendor/blendermania-addon/utils/Constants.py:439:
+    #     "GBX.NET can't place free blocks yet"
+    # so even with the right name, free-form block placement may be
+    # limited. The seed map provides a base ground plane regardless.
+    blocks_payload: list[dict] = []
+    _ = block_name  # parameter kept for backward-compat callers
+    _ = shifted_items
 
     payload = {
         "MapPath": str(output_map),
