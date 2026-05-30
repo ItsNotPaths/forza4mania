@@ -42,31 +42,78 @@ if [ $DO_LOCAL -eq 0 ] && [ $DO_PUBLIC -eq 0 ]; then
 fi
 
 if [ $DO_LOCAL -eq 1 ]; then
-    echo "==> Local build: $PROJECT_NAME -> $RELEASE_DIR"
+    echo "==> Local native Linux build: $PROJECT_NAME -> $RELEASE_DIR"
 
     MSPACK="$PROJECT_DIR/vendor/libmspack/libmspack/mspack"
     if [ ! -d "$MSPACK" ]; then
         echo "error: $MSPACK missing — run ./download-deps.sh first" >&2
         exit 1
     fi
+    if [ ! -d "$PROJECT_DIR/vendor/Forza-X360-IO/src/forza_blender" ]; then
+        echo "error: vendor/Forza-X360-IO missing — run ./download-deps.sh first" >&2
+        exit 1
+    fi
+
+    PY="${PYTHON:-python3}"
+
+    # Nuitka (replaces PyInstaller for the native build) + patchelf (Nuitka's
+    # --standalone needs it to rewrite RPATHs on Linux).
+    if ! "$PY" -m nuitka --version >/dev/null 2>&1; then
+        echo "error: Nuitka not installed. Install with:" >&2
+        echo "    $PY -m pip install nuitka" >&2
+        exit 1
+    fi
+    if ! command -v patchelf >/dev/null 2>&1; then
+        echo "error: patchelf not found — Nuitka --standalone needs it on Linux. Install with:" >&2
+        echo "    sudo apt install patchelf      # or your distro's equivalent" >&2
+        exit 1
+    fi
 
     cc="${CC:-cc}"
     cflags="${CFLAGS:--O2 -Wall}"
 
-    echo "[release] compiling lzxd_helper"
+    echo "[release] compiling lzxd_helper (native ELF)"
     $cc $cflags -I"$MSPACK" \
         -o "$PROJECT_DIR/src/lzxd_helper" \
         "$PROJECT_DIR/src/lzxd_helper.c" \
         "$MSPACK/lzxd.c" \
         "$MSPACK/system.c"
 
+    BUILD_DIR="$PROJECT_DIR/build"
+    MATERIALS_JSON="vendor/blendermania-addon/assets/materials/materials-map-trackmania2020_18122023.json"
+
+    # Data-file mapping mirrors the PyInstaller --add-data/--add-binary set in
+    # .github/workflows/release.yml. Nuitka places --include-data-* payloads
+    # next to the binary; resources.bundle_root() resolves to that dir under
+    # Nuitka, so the runtime lookups (lzx.helper_path, fm4/_vendor_setup, the
+    # seed-map finder) find them at the same relative paths as in dev.
+    echo "[release] Nuitka standalone build (first run is slow — C compile of numpy/tk)"
+    rm -rf "$BUILD_DIR/main.dist"
+    ( cd "$PROJECT_DIR" && "$PY" -m nuitka \
+        --standalone \
+        --assume-yes-for-downloads \
+        --enable-plugin=tk-inter \
+        --include-data-dir=vendor/Forza-X360-IO/src/forza_blender=vendor/Forza-X360-IO/src/forza_blender \
+        --include-data-dir=assets=assets \
+        --include-data-files=scripts/blender_export.py=scripts/blender_export.py \
+        --include-data-files="$MATERIALS_JSON=$MATERIALS_JSON" \
+        --include-data-files=src/lzxd_helper=lzxd_helper \
+        --output-filename=forzamania \
+        --output-dir="$BUILD_DIR" \
+        src/main.py )
+
+    # Nuitka names the standalone folder after the entry script (main.dist).
     rm -rf "$RELEASE_DIR"
     mkdir -p "$RELEASE_DIR"
-    cp -r "$PROJECT_DIR/src" "$RELEASE_DIR/src"
-    [ -f "$PROJECT_DIR/pyproject.toml" ] && cp "$PROJECT_DIR/pyproject.toml" "$RELEASE_DIR/" || true
+    cp -a "$BUILD_DIR/main.dist/." "$RELEASE_DIR/"
+    # tools/ is where the app's find_*() helpers look first; drop the native
+    # NadeoImporter replacement (freeporter) and the Linux blendermania-dotnet
+    # build here. CI will populate these; for local testing, build/copy by hand.
+    mkdir -p "$RELEASE_DIR/tools"
+    echo "Drop native Linux 'nadeo-freeporter' and 'blendermania-dotnet' binaries here." > "$RELEASE_DIR/tools/README.txt"
     [ -f "$PROJECT_DIR/README.md" ] && cp "$PROJECT_DIR/README.md" "$RELEASE_DIR/" || true
     [ -f "$PROJECT_DIR/LICENSE" ]   && cp "$PROJECT_DIR/LICENSE"   "$RELEASE_DIR/" || true
-    echo "==> Local done: $RELEASE_DIR"
+    echo "==> Local done: run $RELEASE_DIR/forzamania"
 fi
 
 if [ $DO_PUBLIC -eq 1 ]; then
