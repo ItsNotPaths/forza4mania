@@ -44,6 +44,15 @@ else
     echo "  done."
 fi
 
+echo "==> blendermania-dotnet (map composer source — built via dotnet at release time)"
+if [ -d "$VENDOR/blendermania-dotnet" ] && [ -n "$(ls -A "$VENDOR/blendermania-dotnet" 2>/dev/null)" ]; then
+    echo "  already present: blendermania-dotnet"
+else
+    echo "  cloning blendermania-dotnet..."
+    git clone --depth=1 "https://github.com/frolad/blendermania-dotnet.git" "$VENDOR/blendermania-dotnet"
+    echo "  done."
+fi
+
 echo "==> libmspack"
 if [ -d "$VENDOR/libmspack" ] && [ -n "$(ls -A "$VENDOR/libmspack" 2>/dev/null)" ]; then
     echo "  already present: libmspack"
