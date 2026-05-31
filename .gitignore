@@ -15,6 +15,13 @@ src/lzxd_helper.exe
 *.dylib
 *.dll
 
+# Nim app build outputs (app/ sources are tracked; binaries + cache are not)
+app/forzamania
+app/forzamania-x11
+app/forzamania-wayland
+app/forzamania.exe
+app/nimcache/
+
 probes/
 
 todo.txt

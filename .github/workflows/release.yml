@@ -25,11 +25,13 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # One Nuitka build per target OS, on a native runner (no cross-compile). Both
-  # call scripts/build_release.sh — the SAME script as `release.sh --local` — so
-  # the local and CI builds can't drift. Each job packages its own dist in a
-  # perm-preserving archive (tar.gz on Linux keeps the +x bits that
-  # upload-artifact would otherwise drop; zip on Windows is the native form).
+  # One build per target OS, on a native runner (no cross-compile). Both call
+  # scripts/build_release.sh — the SAME script as `release.sh --local --with-tools`
+  # — so the local and CI builds can't drift. The main app is the Nim/wayluigi
+  # binary (X11 on Linux, GDI on Windows); the runtime CLIs (lzxd_helper, x360io,
+  # freeporter) are still bundled via Nuitka + the release-asset downloader. Each
+  # job packages its own dist in a perm-preserving archive (tar.gz on Linux keeps
+  # the +x bits that upload-artifact would otherwise drop; zip on Windows).
   build:
     name: Build (${{ matrix.platform }})
     strategy:
@@ -38,8 +40,10 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux
+            backend: x11
           - os: windows-latest
             platform: windows
+            backend: windows
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -50,11 +54,17 @@ jobs:
           path: vendor
           key: vendor-${{ matrix.platform }}-${{ hashFiles('download-deps.sh') }}
 
-      - name: Download deps (libmspack, Forza-X360-IO, blendermania-addon)
+      - name: Download deps (wayluigi, rawk-luigi, libmspack, Forza-X360-IO)
         shell: bash
         run: |
           chmod +x ./download-deps.sh
           ./download-deps.sh
+
+      - name: Install Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: 'stable'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Python
         uses: actions/setup-python@v5
@@ -65,9 +75,10 @@ jobs:
         if: matrix.platform == 'linux'
         shell: bash
         run: |
-          # patchelf: Nuitka --standalone needs it to rewrite RPATHs on Linux.
+          # libx11-dev: the Nim app's X11 backend links -lX11.
+          # patchelf: Nuitka --standalone (x360io) needs it to rewrite RPATHs.
           sudo apt-get update
-          sudo apt-get install -y patchelf
+          sudo apt-get install -y patchelf libx11-dev
           python -m pip install --upgrade pip
           python -m pip install nuitka numpy
 
@@ -75,18 +86,18 @@ jobs:
         if: matrix.platform == 'windows'
         shell: bash
         run: |
-          # Nuitka uses the runner's MSVC for the app; the mingw `gcc` on PATH
-          # builds the static lzxd_helper.exe (see build_release.sh).
+          # Nim's bundled mingw provides the `gcc` used for both the Nim app's
+          # C backend and the static lzxd_helper.exe. Nuitka builds x360io.
           python -m pip install --upgrade pip
           python -m pip install nuitka numpy
 
-      - name: Nuitka build (shared script)
+      - name: Build (shared script — Nim app + tool bundle)
         shell: bash
         env:
           PYTHON: python   # setup-python exposes `python` on every OS
         run: |
           chmod +x scripts/build_release.sh
-          scripts/build_release.sh "$PWD/dist-stage"
+          scripts/build_release.sh "$PWD/dist-stage" "${{ matrix.backend }}"
 
       - name: Package (Linux tar.gz — preserves exec bits)
         if: matrix.platform == 'linux'

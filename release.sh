@@ -7,19 +7,30 @@ RELEASE_DIR="$(cd "$PROJECT_DIR/.." && pwd)/${PROJECT_NAME}-release"
 
 usage() {
     cat <<EOF
-usage: $(basename "$0") [--local] [--public --version vX.Y.Z [--notes "text"] [--prerelease]]
+usage: $(basename "$0") --local [--x11|--wayland|--windows] [--with-tools]
+       $(basename "$0") --public --version vX.Y.Z [--notes "text"] [--prerelease]
 
-  --local               build locally for THIS platform via Nuitka (delegates to
-                        scripts/build_release.sh) → ../<project>-release/
-  --public              trigger release.yml on GitHub via gh CLI (Nuitka win+linux)
+  --local               build the Nim app locally → ../<project>-release/
+    --x11               X11 backend (default)
+    --wayland           Wayland backend
+    --windows           Windows backend (mingw cross-compile → .exe)
+    --with-tools        also bundle the runtime CLIs (lzxd_helper, x360io,
+                        freeporter). Slow (Nuitka). Omit for a fast GUI-only
+                        build while iterating on the UI.
+  --public              trigger release.yml on GitHub via gh CLI
   --version <tag>       required when --public is used (e.g. v0.1.0)
   --notes <text>        optional release notes (passed to GitHub release body)
   --prerelease          mark the release as a pre-release
+
+The real build logic lives in scripts/build_release.sh so the local build and
+the GitHub release.yml matrix stay in lockstep.
 EOF
 }
 
 DO_LOCAL=0
 DO_PUBLIC=0
+BACKEND=x11
+WITH_TOOLS=0
 VERSION=""
 NOTES=""
 PRERELEASE=false
@@ -27,6 +38,10 @@ PRERELEASE=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --local)      DO_LOCAL=1; shift ;;
+        --x11)        BACKEND=x11; shift ;;
+        --wayland)    BACKEND=wayland; shift ;;
+        --windows)    BACKEND=windows; shift ;;
+        --with-tools) WITH_TOOLS=1; shift ;;
         --public)     DO_PUBLIC=1; shift ;;
         --version)    VERSION="${2:-}"; shift 2 ;;
         --notes)      NOTES="${2:-}"; shift 2 ;;
@@ -42,11 +57,14 @@ if [ $DO_LOCAL -eq 0 ] && [ $DO_PUBLIC -eq 0 ]; then
 fi
 
 if [ $DO_LOCAL -eq 1 ]; then
-    # All the real build logic lives in scripts/build_release.sh so the local
-    # build and the GitHub release.yml matrix (ubuntu + windows) stay in lockstep.
-    # It builds for THIS host platform via Nuitka (Linux ELF or Windows .exe).
-    "$PROJECT_DIR/scripts/build_release.sh" "$RELEASE_DIR"
-    echo "==> Local done: run $RELEASE_DIR/forzamania"
+    # FM_GUI_ONLY skips the slow CLI bundling so UI iteration is a quick
+    # `nim c`. Pass --with-tools for a complete release bundle.
+    if [ $WITH_TOOLS -eq 0 ]; then
+        export FM_GUI_ONLY=1
+    fi
+    "$PROJECT_DIR/scripts/build_release.sh" "$RELEASE_DIR" "$BACKEND"
+    BIN="forzamania"; [ "$BACKEND" = windows ] && BIN="forzamania.exe"
+    echo "==> Local done ($BACKEND): run $RELEASE_DIR/$BIN"
 fi
 
 if [ $DO_PUBLIC -eq 1 ]; then

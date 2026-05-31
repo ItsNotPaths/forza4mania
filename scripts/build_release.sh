@@ -1,41 +1,105 @@
 #!/usr/bin/env bash
-# Shared Nuitka build for forzamania — produces a self-contained release dir
-# for the HOST platform (Linux ELF bundle or Windows .exe bundle). The same
-# script drives both `release.sh --local` and the GitHub release.yml matrix
-# (ubuntu + windows runners), so the two never drift.
+# Shared build for forzamania — produces a release dir for the chosen backend.
+# The main app is the Nim/wayluigi binary (app/forzamania.nim); the runtime
+# helpers (lzxd_helper, x360io, freeporter) stay as subprocess CLIs. The same
+# script drives both `release.sh --local` and the GitHub release.yml matrix so
+# the two never drift.
 #
 # Run ./download-deps.sh first. Usage:
-#     scripts/build_release.sh [OUT_DIR]
-# OUT_DIR defaults to ../<project>-release/. Honors $PYTHON (else python3/python)
-# and $CC (else cc/gcc).
+#     scripts/build_release.sh [OUT_DIR] [BACKEND]
+#   OUT_DIR  defaults to ../<project>-release/
+#   BACKEND  x11 (default) | wayland | windows
+#
+# Env:
+#   FM_GUI_ONLY=1   build ONLY the Nim app (skip the CLI bundling + its slow
+#                   Nuitka/patchelf preflights). Fast path for UI iteration.
+#   NIM            nim binary (default: nim)
+#   PYTHON / CC    python / C compiler for the --with-tools steps
 #
 # Produces in OUT_DIR:
-#   forzamania[.exe]            — the Nuitka --standalone app bundle (+ its .so/.dll, data)
-#   tools/x360io/x360io[.exe]   — the FM4 reader CLI (separate Nuitka --standalone dist)
-#   tools/nadeo-freeporter[.exe]— freeporter (importer + map composer), per-platform release asset
+#   forzamania[.exe]              — the Nim/wayluigi app (built-in font, no freetype dep)
+# and, unless FM_GUI_ONLY:
+#   tools/lzxd_helper[.exe]       — LZX decompressor for bin.zip (native C)
+#   tools/x360io/x360io[.exe]     — FM4 reader CLI (Nuitka --standalone dist)
+#   tools/nadeo-freeporter[.exe]  — freeporter (importer + map composer), release asset
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_NAME="$(basename "$PROJECT_DIR")"
 OUT_DIR="${1:-$(cd "$PROJECT_DIR/.." && pwd)/${PROJECT_NAME}-release}"
+BACKEND="${2:-x11}"
 BUILD_DIR="$PROJECT_DIR/build"
+GUI_ONLY="${FM_GUI_ONLY:-0}"
 
-# --- python / compiler ----------------------------------------------------
+NIM_BIN="${NIM:-nim}"
 PY="${PYTHON:-}"
 if [ -z "$PY" ]; then
     if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
 fi
 CC_BIN="${CC:-${cc:-gcc}}"
 
-# --- platform detection ---------------------------------------------------
+# --- host platform (for the native CLI steps) -----------------------------
 case "$(uname -s)" in
     Linux*)                       PLATFORM=linux ;;
     MINGW*|MSYS*|CYGWIN*|Windows*) PLATFORM=windows ;;
     *) echo "error: unsupported build platform: $(uname -s)" >&2; exit 1 ;;
 esac
-echo "==> forzamania Nuitka build ($PLATFORM) -> $OUT_DIR"
+
+# --- backend → nim flags + output name ------------------------------------
+NIM_BACKEND_FLAGS=""
+MAIN_BIN="forzamania"
+case "$BACKEND" in
+    x11)     NIM_BACKEND_FLAGS="" ;;
+    wayland) NIM_BACKEND_FLAGS="-d:wayland" ;;
+    windows) NIM_BACKEND_FLAGS="-d:mingw"; MAIN_BIN="forzamania.exe" ;;
+    *) echo "error: unknown backend '$BACKEND' (want x11|wayland|windows)" >&2; exit 1 ;;
+esac
+
+echo "==> forzamania build (backend=$BACKEND, gui_only=$GUI_ONLY) -> $OUT_DIR"
 
 # --- preflight ------------------------------------------------------------
+command -v "$NIM_BIN" >/dev/null 2>&1 || {
+    echo "error: nim not found. Install Nim (https://nim-lang.org) or set \$NIM." >&2; exit 1; }
+[ -d "$PROJECT_DIR/vendor/wayluigi" ] && [ -d "$PROJECT_DIR/vendor/rawk-luigi" ] || {
+    echo "error: vendor/wayluigi or vendor/rawk-luigi missing — run ./download-deps.sh first" >&2; exit 1; }
+
+# A full Windows bundle needs a Windows host: Nuitka (x360io) and the
+# freeporter asset picker both key off the host platform, so they can't be
+# cross-produced from Linux. The Nim app itself cross-compiles fine, so the
+# GUI-only Windows build is allowed from Linux.
+if [ "$BACKEND" = windows ] && [ "$GUI_ONLY" != 1 ] && [ "$PLATFORM" != windows ]; then
+    echo "error: --windows --with-tools must run on a Windows host (x360io/freeporter" >&2
+    echo "       can't cross-compile from Linux). Use --windows alone for a GUI-only .exe," >&2
+    echo "       or build the full Windows bundle in CI / on Windows." >&2
+    exit 1
+fi
+
+# --- fresh out dir --------------------------------------------------------
+rm -rf "$OUT_DIR"
+mkdir -p "$OUT_DIR"
+
+# --- 1. Nim app (the main binary) -----------------------------------------
+# Built-in luigi bitmap font (-d:luigiNoFreetype) — no freetype dep. --app:gui
+# gives the Windows build the GUI subsystem (no console window); harmless on
+# Linux. config.nims wires the vendored rawk-luigi + wayluigi paths.
+echo "[build] Nim app ($MAIN_BIN, $BACKEND)"
+( cd "$PROJECT_DIR/app" && "$NIM_BIN" c --hints:off \
+    -d:release -d:luigiNoFreetype --app:gui \
+    $NIM_BACKEND_FLAGS \
+    -o:"$OUT_DIR/$MAIN_BIN" \
+    forzamania.nim )
+
+if [ "$GUI_ONLY" = 1 ]; then
+    [ -f "$PROJECT_DIR/README.md" ] && cp "$PROJECT_DIR/README.md" "$OUT_DIR/" || true
+    [ -f "$PROJECT_DIR/LICENSE" ]   && cp "$PROJECT_DIR/LICENSE"   "$OUT_DIR/" || true
+    echo "==> done (gui-only, $BACKEND): $OUT_DIR/$MAIN_BIN"
+    exit 0
+fi
+
+# ====================== full bundle (--with-tools) ========================
+mkdir -p "$OUT_DIR/tools"
+
+# --- tool preflight -------------------------------------------------------
 MSPACK="$PROJECT_DIR/vendor/libmspack/libmspack/mspack"
 [ -d "$MSPACK" ] || { echo "error: $MSPACK missing — run ./download-deps.sh first" >&2; exit 1; }
 [ -d "$PROJECT_DIR/vendor/Forza-X360-IO/src/forza_blender" ] || {
@@ -48,12 +112,9 @@ if [ "$PLATFORM" = linux ] && ! command -v patchelf >/dev/null 2>&1; then
     exit 1
 fi
 
-MATERIALS_JSON="vendor/blendermania-addon/assets/materials/materials-map-trackmania2020_18122023.json"
-
-# --- 1. lzxd_helper (per-platform native C) -------------------------------
-# Windows: fully static-link the mingw runtime so the helper has zero DLL deps
-# (libgcc_s/libwinpthread are absent under Wine and the daemon would die before
-# its first read). Linux: a plain ELF.
+# --- 2. lzxd_helper (per-platform native C) -------------------------------
+# Windows: fully static-link the mingw runtime so the helper has zero DLL deps.
+# Linux: a plain ELF.
 if [ "$PLATFORM" = windows ]; then
     HELPER_REL="src/lzxd_helper.exe"
     HELPER_CFLAGS="-O2 -Wall -static -static-libgcc"
@@ -68,32 +129,11 @@ $CC_BIN $HELPER_CFLAGS -I"$MSPACK" \
     "$PROJECT_DIR/src/lzxd_helper.c" \
     "$MSPACK/lzxd.c" \
     "$MSPACK/system.c"
-
-# --- 2. Nuitka: main app --------------------------------------------------
-# --standalone (not --onefile: onefile re-extracts the numpy bundle every
-# launch). Data mappings place payloads next to the binary, where
-# resources.bundle_root() resolves them under Nuitka. forza_blender is still
-# needed by textures.py (the in-process Bix/deswizzle path).
-echo "[build] Nuitka standalone app (first run is slow — C compile of numpy/tk)"
-rm -rf "$BUILD_DIR/main.dist"
-( cd "$PROJECT_DIR" && "$PY" -m nuitka \
-    --standalone \
-    --assume-yes-for-downloads \
-    --enable-plugin=tk-inter \
-    --include-data-dir=vendor/Forza-X360-IO/src/forza_blender=vendor/Forza-X360-IO/src/forza_blender \
-    --include-data-dir=assets=assets \
-    --include-data-files=scripts/blender_export.py=scripts/blender_export.py \
-    --include-data-files="$MATERIALS_JSON=$MATERIALS_JSON" \
-    --include-data-files="$HELPER_REL=$HELPER_NAME" \
-    --output-filename=forzamania \
-    --output-dir="$BUILD_DIR" \
-    src/main.py )
+cp "$PROJECT_DIR/$HELPER_REL" "$OUT_DIR/tools/$HELPER_NAME"
 
 # --- 3. Nuitka: x360io FM4 reader CLI -------------------------------------
 # Copy patches/x360io_cli.py into the cloned Forza-X360-IO src so it sits beside
-# forza_blender/ — vendor/ is gitignored and never hand-edited. Ships
-# forza_blender as a data dir; the wrapper loads those parsers at runtime via
-# the bpy-bypass stub (the addon __init__ imports bpy, which we never run).
+# forza_blender/ — vendor/ is gitignored and never hand-edited.
 echo "[build] Nuitka standalone x360io reader CLI"
 X360_SRC="$PROJECT_DIR/vendor/Forza-X360-IO/src"
 cp "$PROJECT_DIR/patches/x360io_cli.py" "$X360_SRC/x360io_cli.py"
@@ -105,21 +145,13 @@ rm -rf "$BUILD_DIR/x360io_cli.dist"
     --output-filename=x360io \
     --output-dir="$BUILD_DIR" \
     x360io_cli.py )
-
-# --- 4. assemble release dir ----------------------------------------------
-echo "[build] assembling $OUT_DIR"
-rm -rf "$OUT_DIR"
-mkdir -p "$OUT_DIR"
-cp -a "$BUILD_DIR/main.dist/." "$OUT_DIR/"
 mkdir -p "$OUT_DIR/tools/x360io"
 cp -a "$BUILD_DIR/x360io_cli.dist/." "$OUT_DIR/tools/x360io/"
 [ "$PLATFORM" = linux ] && chmod +x "$OUT_DIR/tools/x360io/x360io" || true
 
-# --- 5. bundle freeporter (per-platform release asset) --------------------
-# Reuse the app's own verified downloader — it picks the linux/windows asset by
-# the build host's sys.platform (host == target for each matrix job), unzips
-# into tools/, and restores the ELF exec bit. Non-fatal: if GitHub rate-limits
-# the API in CI, the app can still fetch it at runtime (Settings → Download).
+# --- 4. bundle freeporter (per-platform release asset) --------------------
+# Reuse the app's own verified downloader — picks the linux/windows asset by the
+# build host's sys.platform, unzips into tools/, restores the ELF exec bit.
 echo "[build] bundling nadeo-freeporter ($PLATFORM release asset)"
 if PYTHONPATH="$PROJECT_DIR/src" "$PY" - "$OUT_DIR/tools" <<'PYEOF'
 import sys
@@ -132,9 +164,9 @@ then :; else
     echo "[build] WARNING: freeporter bundling failed (rate limit?); users can Download it in Settings." >&2
 fi
 
-# --- 6. docs --------------------------------------------------------------
-echo "Bundled: x360io/ (FM4 reader) + nadeo-freeporter (importer + map composer). Update freeporter via Settings → Download freeporter." > "$OUT_DIR/tools/README.txt"
+# --- 5. docs --------------------------------------------------------------
+echo "Bundled: lzxd_helper (bin.zip LZX) + x360io/ (FM4 reader) + nadeo-freeporter (importer + map composer). Update freeporter via Settings → Download freeporter." > "$OUT_DIR/tools/README.txt"
 [ -f "$PROJECT_DIR/README.md" ] && cp "$PROJECT_DIR/README.md" "$OUT_DIR/" || true
 [ -f "$PROJECT_DIR/LICENSE" ]   && cp "$PROJECT_DIR/LICENSE"   "$OUT_DIR/" || true
 
-echo "==> done ($PLATFORM): $OUT_DIR"
+echo "==> done ($BACKEND, full bundle): $OUT_DIR"

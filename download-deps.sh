@@ -35,21 +35,30 @@ else
     echo "  done."
 fi
 
-echo "==> blendermania-addon"
-if [ -d "$VENDOR/blendermania-addon" ] && [ -n "$(ls -A "$VENDOR/blendermania-addon" 2>/dev/null)" ]; then
-    echo "  already present: blendermania-addon"
-else
-    echo "  cloning blendermania-addon..."
-    git clone --depth=1 "https://github.com/skyslide22/blendermania-addon.git" "$VENDOR/blendermania-addon"
-    echo "  done."
-fi
-
 echo "==> libmspack"
 if [ -d "$VENDOR/libmspack" ] && [ -n "$(ls -A "$VENDOR/libmspack" 2>/dev/null)" ]; then
     echo "  already present: libmspack"
 else
     echo "  cloning libmspack..."
     git clone --depth=1 "https://github.com/kyz/libmspack.git" "$VENDOR/libmspack"
+    echo "  done."
+fi
+
+echo "==> wayluigi"
+if [ -d "$VENDOR/wayluigi" ] && [ -n "$(ls -A "$VENDOR/wayluigi" 2>/dev/null)" ]; then
+    echo "  already present: wayluigi"
+else
+    echo "  cloning wayluigi..."
+    git clone --depth=1 "https://github.com/ItsNotPaths/wayluigi.git" "$VENDOR/wayluigi"
+    echo "  done."
+fi
+
+echo "==> rawk-luigi (nim bindings)"
+if [ -d "$VENDOR/rawk-luigi" ] && [ -n "$(ls -A "$VENDOR/rawk-luigi" 2>/dev/null)" ]; then
+    echo "  already present: rawk-luigi"
+else
+    echo "  cloning rawk-luigi..."
+    git clone --depth=1 "https://github.com/ItsNotPaths/rawk-luigi.git" "$VENDOR/rawk-luigi"
     echo "  done."
 fi
 
