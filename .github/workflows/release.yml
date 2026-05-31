@@ -41,6 +41,9 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             backend: x11
+          - os: ubuntu-latest
+            platform: linux-wayland
+            backend: wayland
           - os: windows-latest
             platform: windows
             backend: windows
@@ -72,13 +75,15 @@ jobs:
           python-version: '3.12'
 
       - name: Install build deps (Linux)
-        if: matrix.platform == 'linux'
+        if: runner.os == 'Linux'
         shell: bash
         run: |
-          # libx11-dev: the Nim app's X11 backend links -lX11.
-          # patchelf: Nuitka --standalone (x360io) needs it to rewrite RPATHs.
+          # libx11-dev: the X11 backend links -lX11. libwayland-dev +
+          # libxkbcommon-dev + wayland-protocols: the Wayland backend. patchelf:
+          # Nuitka --standalone (x360io) needs it to rewrite RPATHs. Both backends'
+          # dev libs are installed on every Linux job; each build links only its own.
           sudo apt-get update
-          sudo apt-get install -y patchelf libx11-dev
+          sudo apt-get install -y patchelf libx11-dev libwayland-dev libxkbcommon-dev wayland-protocols
           python -m pip install --upgrade pip
           python -m pip install nuitka numpy
 
@@ -100,10 +105,11 @@ jobs:
           scripts/build_release.sh "$PWD/dist-stage" "${{ matrix.backend }}"
 
       - name: Package (Linux tar.gz — preserves exec bits)
-        if: matrix.platform == 'linux'
+        if: runner.os == 'Linux'
         shell: bash
         run: |
-          tar -C dist-stage -czf "${PROJECT_NAME}-${{ inputs.version }}-linux.tar.gz" .
+          # ${{ matrix.platform }} = linux (x11) | linux-wayland → distinct assets.
+          tar -C dist-stage -czf "${PROJECT_NAME}-${{ inputs.version }}-${{ matrix.platform }}.tar.gz" .
 
       - name: Package (Windows zip)
         if: matrix.platform == 'windows'
@@ -115,8 +121,8 @@ jobs:
         with:
           name: ${{ matrix.platform }}
           path: |
-            ${{ env.PROJECT_NAME }}-${{ inputs.version }}-linux.tar.gz
-            ${{ env.PROJECT_NAME }}-${{ inputs.version }}-windows.zip
+            ${{ env.PROJECT_NAME }}-${{ inputs.version }}-${{ matrix.platform }}.tar.gz
+            ${{ env.PROJECT_NAME }}-${{ inputs.version }}-${{ matrix.platform }}.zip
           if-no-files-found: ignore
 
   release:
@@ -139,9 +145,9 @@ jobs:
           if [ "${{ inputs.prerelease }}" = "true" ]; then
             PRERELEASE_FLAG="--prerelease"
           fi
+          # All built assets: linux.tar.gz + linux-wayland.tar.gz + windows.zip.
           gh release create "${{ inputs.version }}" \
-              "artifacts/${PROJECT_NAME}-${{ inputs.version }}-linux.tar.gz" \
-              "artifacts/${PROJECT_NAME}-${{ inputs.version }}-windows.zip" \
+              artifacts/${PROJECT_NAME}-${{ inputs.version }}-* \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${{ inputs.version }}" \
               --notes "${{ inputs.notes }}" \
