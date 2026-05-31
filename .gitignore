@@ -16,3 +16,5 @@ src/lzxd_helper.exe
 *.dll
 
 probes/
+
+todo.txt

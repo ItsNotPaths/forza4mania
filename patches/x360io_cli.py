@@ -4,9 +4,10 @@
 This is forzamania's "patch" over the vendored Forza-X360-IO addon: it wraps
 that addon's pure-Python binary parsers (rmb.bin / PVS / FXL shaders) into a
 no-Blender CLI that reads one FM4 track + ribbon and serialises the parsed
-geometry to a single ``.npz`` file. forzamania then spawns this binary instead
-of importing the parsers in-process, so the heavy numpy/parser code lives in a
-freeporter-style native binary and the orchestrator can be anything.
+geometry to a JSON manifest + sibling raw ``.bin`` blob. forzamania then spawns
+this binary instead of importing the parsers in-process, so the heavy
+numpy/parser code lives in a freeporter-style native binary and the
+orchestrator can be anything (a future Nim app reads JSON + slices the .bin).
 
 This file is kept in ``patches/`` (tracked) and copied into the cloned
 ``vendor/Forza-X360-IO/src/`` at build time — vendor/ is never hand-edited. At
@@ -17,21 +18,26 @@ addon's __init__ imports bpy, which we never want to run).
 
 Usage:
     x360io read --bin-dir <extracted bin/ dir> --pvs <ribbon.pvs> \
-                --track-name <name> --out <out.npz> [--vendor-src <dir>]
+                --track-name <name> --out <out.json> [--vendor-src <dir>]
 
 ``--bin-dir`` is an already-extracted FM4 ``bin/`` tree (forzamania does the
 method-21 bin.zip extraction with its libmspack helper before calling us).
 ``--vendor-src`` is the dir CONTAINING ``forza_blender/``; needed only when run
 interpreted in dev (the compiled binary finds it next to itself).
 
-Output ``.npz`` schema (consumed by src/fm4/reader.py):
-    __manifest__ : 0-d array holding a JSON string (see _MANIFEST_VERSION).
-    mesh_<key>_vertices        (N,3) f32   — required, per mesh
-    mesh_<key>_faces           (F,3) u32   — required
-    mesh_<key>_material_per_face (F,) u32  — required
-    mesh_<key>_uvs             (N,2) f32   — optional (manifest.has_uvs)
-    mesh_<key>_normals         (N,3) f32   — optional (manifest.has_normals)
-    instance_transforms        (I,4,4) f32 — one per manifest.instances entry
+Output = a language-neutral JSON manifest + a sibling raw binary blob (glTF
+style), so the consumer needs no numpy/npz reader (a future Nim orchestrator
+reads JSON + slices the .bin). For ``--out track.json`` we also write
+``track.bin``; the manifest names it in ``"bin"``. Every ndarray is stored as
+canonical little-endian, C-order bytes in the blob and described in the
+manifest by ``{"dtype","shape","offset","length"}`` (offset/length in bytes).
+Schema (consumed by src/fm4/reader.py; see _MANIFEST_VERSION):
+    version, track_name, prefix, bin, shader_names[]
+    meshes[]   : {key, name, materials[], vertices, faces, material_per_face,
+                  uvs?, normals?}   — the array fields are descriptors
+    instances[]: {model_index, texture_index, flags}  (transform in instance_transforms[i])
+    instance_transforms : descriptor for an (I,4,4) f32 array
+    textures[] : {file_index, is_stx, u_scale, v_scale, u_translate, v_translate}
 """
 from __future__ import annotations
 
@@ -43,7 +49,7 @@ from pathlib import Path
 
 import numpy as np
 
-_MANIFEST_VERSION = 1
+_MANIFEST_VERSION = 2
 
 
 # --------------------------------------------------------------------------
@@ -310,11 +316,31 @@ def _decode_track_section(rmb, section_idx: int, shaders: dict) -> dict | None:
     }
 
 
-def read_track(bin_dir: Path, pvs_path: Path, track_name: str) -> tuple[dict, dict]:
-    """Parse an FM4 track into (manifest, arrays).
+def _put_array(blob: bytearray, arr: np.ndarray) -> dict:
+    """Append `arr` to `blob` as canonical little-endian, C-order bytes.
 
-    `manifest` is the JSON-serialisable structure/metadata; `arrays` maps npz
-    keys → ndarrays. Together they round-trip into forzamania's TrackIR.
+    Returns the manifest descriptor {dtype, shape, offset, length} (offset and
+    length in bytes into the blob). Forcing little-endian means a non-numpy
+    reader (the future Nim orchestrator) can assume LE regardless of build host.
+    """
+    a = np.ascontiguousarray(arr).astype(arr.dtype.newbyteorder("<"), copy=False)
+    data = a.tobytes(order="C")
+    offset = len(blob)
+    blob.extend(data)
+    return {
+        "dtype": a.dtype.str,                 # e.g. "<f4", "<u4"
+        "shape": [int(d) for d in a.shape],
+        "offset": offset,
+        "length": len(data),
+    }
+
+
+def read_track(bin_dir: Path, pvs_path: Path, track_name: str) -> tuple[dict, bytes]:
+    """Parse an FM4 track into (manifest, blob).
+
+    `manifest` is the JSON-serialisable structure (array fields are descriptors
+    into `blob`); `blob` is the concatenated raw little-endian array bytes.
+    Together they round-trip into forzamania's TrackIR.
     """
     # Imports must come after ensure_forza_blender() — they trigger the
     # bypassed package and need the bpy/mathutils stubs in place.
@@ -343,7 +369,7 @@ def read_track(bin_dir: Path, pvs_path: Path, track_name: str) -> tuple[dict, di
             pass
 
     referenced = sorted({mi.model_index for mi in pvs.models_instances})
-    arrays: dict = {}
+    blob = bytearray()
     mesh_manifest: list[dict] = []
     for model_idx in referenced:
         rmb_path = _resolve(case_index, f"{pvs.prefix}.{model_idx:05d}.rmb.bin")
@@ -360,20 +386,19 @@ def read_track(bin_dir: Path, pvs_path: Path, track_name: str) -> tuple[dict, di
             if mesh is None:
                 continue
             key = (model_idx << 8) | s_idx
-            arrays[f"mesh_{key}_vertices"] = mesh["vertices"]
-            arrays[f"mesh_{key}_faces"] = mesh["faces"]
-            arrays[f"mesh_{key}_material_per_face"] = mesh["material_per_face"]
             entry = {
                 "key": int(key),
                 "name": mesh["name"],
-                "has_uvs": mesh["uvs"] is not None,
-                "has_normals": mesh["normals"] is not None,
                 "materials": mesh["materials"],
+                "vertices": _put_array(blob, mesh["vertices"]),
+                "faces": _put_array(blob, mesh["faces"]),
+                "material_per_face": _put_array(blob, mesh["material_per_face"]),
             }
+            # Optional arrays: presence of the key signals availability.
             if mesh["uvs"] is not None:
-                arrays[f"mesh_{key}_uvs"] = mesh["uvs"]
+                entry["uvs"] = _put_array(blob, mesh["uvs"])
             if mesh["normals"] is not None:
-                arrays[f"mesh_{key}_normals"] = mesh["normals"]
+                entry["normals"] = _put_array(blob, mesh["normals"])
             mesh_manifest.append(entry)
 
     # Combine main + lone instance arrays — FM4 splits placements across both.
@@ -391,9 +416,9 @@ def read_track(bin_dir: Path, pvs_path: Path, track_name: str) -> tuple[dict, di
             "flags": int(inst.flags),
         })
     if transforms:
-        arrays["instance_transforms"] = np.stack(transforms).astype(np.float32)
+        tf = np.stack(transforms).astype(np.float32)
     else:
-        arrays["instance_transforms"] = np.zeros((0, 4, 4), dtype=np.float32)
+        tf = np.zeros((0, 4, 4), dtype=np.float32)
 
     texture_manifest: list[dict] = []
     for t in pvs.textures:
@@ -410,12 +435,14 @@ def read_track(bin_dir: Path, pvs_path: Path, track_name: str) -> tuple[dict, di
         "version": _MANIFEST_VERSION,
         "track_name": track_name,
         "prefix": pvs.prefix,
+        "bin": None,  # filled in by cmd_read with the sidecar's basename
         "shader_names": list(pvs.shaders),
         "meshes": mesh_manifest,
         "instances": instance_manifest,
+        "instance_transforms": _put_array(blob, tf),
         "textures": texture_manifest,
     }
-    return manifest, arrays
+    return manifest, bytes(blob)
 
 
 def cmd_read(args: argparse.Namespace) -> int:
@@ -430,21 +457,17 @@ def cmd_read(args: argparse.Namespace) -> int:
         print(f"error: --pvs not found: {pvs_path}", file=sys.stderr)
         return 2
 
-    manifest, arrays = read_track(bin_dir, pvs_path, args.track_name)
+    manifest, blob = read_track(bin_dir, pvs_path, args.track_name)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    payload = dict(arrays)
-    payload["__manifest__"] = np.array(json.dumps(manifest), dtype=object)
-    np.savez_compressed(out, **payload)
-    # np.savez_compressed appends .npz if the name lacks it; normalise so the
-    # caller finds the file at exactly --out.
-    written = out if out.suffix == ".npz" else out.with_suffix(out.suffix + ".npz")
-    if written != out and written.is_file():
-        written.replace(out)
+    bin_path = out.with_suffix(".bin")
+    manifest["bin"] = bin_path.name  # resolved relative to the .json by the reader
+    bin_path.write_bytes(blob)
+    out.write_text(json.dumps(manifest))
 
     print(
-        f"SUCCESS: {args.track_name} -> {out} "
+        f"SUCCESS: {args.track_name} -> {out} (+{bin_path.name}, {len(blob)} bytes) "
         f"({len(manifest['meshes'])} meshes, {len(manifest['instances'])} instances, "
         f"{len(manifest['textures'])} textures)"
     )
@@ -455,11 +478,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="x360io", description="Headless FM4 track reader (Forza-X360-IO).")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    r = sub.add_parser("read", help="parse an FM4 track+ribbon into a .npz TrackIR")
+    r = sub.add_parser("read", help="parse an FM4 track+ribbon into a .json TrackIR (+ sibling .bin)")
     r.add_argument("--bin-dir", required=True, help="already-extracted FM4 bin/ tree")
     r.add_argument("--pvs", required=True, help="ribbon .pvs file")
     r.add_argument("--track-name", required=True, help="track name (stored in the manifest)")
-    r.add_argument("--out", required=True, help="output .npz path")
+    r.add_argument("--out", required=True, help="output .json path (arrays go in a sibling .bin)")
     r.add_argument("--vendor-src", default=None,
                    help="dir containing forza_blender/ (dev only; auto-found next to the binary)")
     r.set_defaults(func=cmd_read)
