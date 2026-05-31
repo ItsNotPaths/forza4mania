@@ -102,7 +102,7 @@ proc windowsBlenderInstalls(): seq[string] =
       found.sort(order = Descending)   # "Blender 5.1" before "Blender 4.5"
       result.add found
 
-proc detectBlender(): string =
+proc detectBlender*(): string =
   ## Cross-platform: Steam libraries (incl. custom drives) → Windows Program
   ## Files (newest) → Unix standard dirs → PATH.
   let exe = when defined(windows): "blender.exe" else: "blender"

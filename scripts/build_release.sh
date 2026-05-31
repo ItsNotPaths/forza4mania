@@ -81,10 +81,12 @@ mkdir -p "$OUT_DIR"
 # --- 1. Nim app (the main binary) -----------------------------------------
 # Built-in luigi bitmap font (-d:luigiNoFreetype) — no freetype dep. --app:gui
 # gives the Windows build the GUI subsystem (no console window); harmless on
-# Linux. config.nims wires the vendored rawk-luigi + wayluigi paths.
+# Linux. -d:ssl links OpenSSL for the Settings → Download freeporter button
+# (std/httpclient over HTTPS). config.nims wires the vendored rawk-luigi +
+# wayluigi paths.
 echo "[build] Nim app ($MAIN_BIN, $BACKEND)"
 ( cd "$PROJECT_DIR/app" && "$NIM_BIN" c --hints:off \
-    -d:release -d:luigiNoFreetype --app:gui \
+    -d:release -d:luigiNoFreetype -d:ssl --app:gui \
     $NIM_BACKEND_FLAGS \
     -o:"$OUT_DIR/$MAIN_BIN" \
     forzamania.nim )

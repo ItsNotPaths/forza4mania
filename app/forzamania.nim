@@ -9,6 +9,8 @@ import std/[strutils, os]
 import rawk_luigi
 import settings
 import tracks
+import pipeline
+import external_downloader
 
 # ---- shared app state ----------------------------------------------------
 # luigi invokes button/checkbox callbacks as plain C function pointers, so the
@@ -23,6 +25,7 @@ var
   gSettings: Settings
   gFields: SettingsFields
   gSettingsStatus: ptr Label
+  gDownloadBtn: ptr Button    # Settings → Download freeporter (wired in main)
   gLog: ptr Code
 
 # Export runs on a worker thread (luigi isn't thread-safe). The worker streams
@@ -39,8 +42,15 @@ var
   gLogChan: Channel[string]
   gWorker: Thread[ExportInput]
   gJobRunning: bool
+  gDlWorker: Thread[string]    # freeporter download (Settings button)
+  gDlRunning: bool
 
-const JOB_DONE = "\x01__forzamania_job_done__"  # channel sentinel
+const
+  JOB_DONE = "\x01__forzamania_job_done__"  # export-batch channel sentinel
+  # Download sentinel is a PREFIX: the worker appends the resulting binary path
+  # (passed via the channel, not a string global — globals aren't GC-safe across
+  # threads). Empty path = download failed.
+  DL_DONE  = "\x01__forzamania_dl_done__\x01"
 
 # ---- helpers -------------------------------------------------------------
 
@@ -128,6 +138,9 @@ proc buildSettingsTab(tab: ptr Element) =
 
   let autoBtn = buttonCreate(addr p.e, 0, "autodetect", -1)
   autoBtn.invoke = onSettingsAutodetect
+  # Download freeporter into <appdir>/tools/ (.invoke wired in main, since the
+  # download worker is defined later in this module).
+  gDownloadBtn = buttonCreate(addr p.e, 0, "Download freeporter", -1)
 
   discard spacerCreate(addr p.e, SPACER_LINE or ELEMENT_H_FILL, 0, 1)
   discard labelCreate(addr p.e, 0, "Conversion knobs", -1)
@@ -203,14 +216,33 @@ proc workerLog(s: string) =
 proc exportWorker(input: ExportInput) {.thread.} =
   workerLog("[convert] exporting " & $input.tracks.len & " track(s)" &
             (if input.stopAtFbx: " (stop at FBX)" else: ""))
-  for t in input.tracks:
-    workerLog("=== " & t.name & " (" & t.ribbon & ") ===")
-    # TODO Phase 2c: real pipeline (read → chunk → FBX → freeporter → map).
-    # Simulated step so live log streaming is exercisable end to end.
-    sleep(150)
-    workerLog("  [stub] pipeline step not ported yet")
+  for i, t in input.tracks:
+    workerLog("\n=== [" & $(i+1) & "/" & $input.tracks.len & "] " & t.name &
+              " (" & t.ribbon & ") ===")
+    try:
+      runPipeline(t, input.cfg, input.stopAtFbx, workerLog)
+    except CatchableError as e:
+      workerLog("[!] " & t.name & " failed: " & e.msg)
   workerLog("[convert] batch done: " & $input.tracks.len & " track(s)")
   gLogChan.send(JOB_DONE)
+  if gWindow != nil: windowPostMessage(gWindow, msgUser, nil)
+
+proc downloadWorker(toolsDir: string) {.thread.} =
+  ## Download the latest nadeo-freeporter into <toolsDir> off the UI thread. The
+  ## resulting binary path travels back through the channel (DL_DONE & path); the
+  ## UI drain wires it into the Importer field. Empty path = failed.
+  workerLog("[downloader] fetching latest nadeo-freeporter → " & toolsDir)
+  var binary = ""
+  try:
+    let r = downloadFreeporter(toolsDir)
+    if r.binary.len > 0:
+      binary = r.binary
+      workerLog("[downloader] done: " & r.binary)
+    else:
+      workerLog("[downloader] extracted but binary not found in " & toolsDir)
+  except CatchableError as e:
+    workerLog("[downloader] failed: " & e.msg)
+  gLogChan.send(DL_DONE & binary)
   if gWindow != nil: windowPostMessage(gWindow, msgUser, nil)
 
 # ---- UI-thread drain -----------------------------------------------------
@@ -225,11 +257,28 @@ proc onJobDone() =
     logLine("[selftest] job complete — exiting")
     quit(0)
 
+proc onDownloadDone(binary: string) =
+  joinThread(gDlWorker)
+  gDlRunning = false
+  when defined(wayland):
+    if gWindow != nil and not gJobRunning:
+      discard elementAnimate(addr gWindow.e, true)  # stop ticking
+  if binary.len > 0:
+    # Auto-fill + persist the Importer path so the runner finds it next run.
+    if gFields.importer != nil: setText(gFields.importer, binary)
+    gSettings.nadeoImporterPath = binary
+    try:
+      save(gSettings)
+      setConvertStatus("freeporter downloaded")
+    except CatchableError as e:
+      logLine("[downloader] save failed: " & e.msg)
+
 proc drainLog() =
   while true:
     let (ok, msg) = gLogChan.tryRecv()
     if not ok: break
     if msg == JOB_DONE: onJobDone()
+    elif msg.startsWith(DL_DONE): onDownloadDone(msg[DL_DONE.len .. ^1])
     else: logLine(msg)
 
 proc onWindowMessage(e: ptr Element; m: Message; di: cint; dp: pointer): cint {.cdecl.} =
@@ -256,6 +305,16 @@ proc onExportChecked(cp: pointer) {.cdecl.} = startExport(checkedTracks())
 proc onExportAll(cp: pointer) {.cdecl.} =
   setAll(true)
   startExport(checkedTracks())
+
+proc onDownloadFreeporter(cp: pointer) {.cdecl.} =
+  if gDlRunning or gJobRunning:
+    logLine("[downloader] busy; try again when the current job finishes"); return
+  gDlRunning = true
+  let toolsDir = getAppDir() / "tools"
+  setConvertStatus("downloading freeporter...")
+  createThread(gDlWorker, downloadWorker, toolsDir)
+  when defined(wayland):
+    if gWindow != nil: discard elementAnimate(addr gWindow.e, false)
 
 proc buildConvertTab(tab: ptr Element) =
   let p = panelCreate(tab, PANEL_GRAY or PANEL_MEDIUM_SPACING or
@@ -311,6 +370,9 @@ proc main() =
   gWindow = win
   win.e.messageUser = onWindowMessage   # drains the worker→UI log channel
   buildUI(win)
+  # The download button lives in the Settings tab (built above) but its callback
+  # is defined after the download worker, so wire it here.
+  if gDownloadBtn != nil: gDownloadBtn.invoke = onDownloadFreeporter
   logLine("[boot] forzamania (Nim/wayluigi) started")
   logLine("[boot] settings: " & settingsPath())
   quit messageLoop()
