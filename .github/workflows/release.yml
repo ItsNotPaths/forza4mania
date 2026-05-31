@@ -25,11 +25,22 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  build-windows:
-    # Native Windows runner so we get a real Win32 build of lzxd_helper +
-    # PyInstaller's --onefile produces a proper .exe (no cross-compile pain).
-    # Final artifact is intended to run on Windows or under Proton/Wine.
-    runs-on: windows-latest
+  # One Nuitka build per target OS, on a native runner (no cross-compile). Both
+  # call scripts/build_release.sh — the SAME script as `release.sh --local` — so
+  # the local and CI builds can't drift. Each job packages its own dist in a
+  # perm-preserving archive (tar.gz on Linux keeps the +x bits that
+  # upload-artifact would otherwise drop; zip on Windows is the native form).
+  build:
+    name: Build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +48,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vendor
-          key: vendor-windows-${{ hashFiles('download-deps.sh') }}
+          key: vendor-${{ matrix.platform }}-${{ hashFiles('download-deps.sh') }}
 
       - name: Download deps (libmspack, Forza-X360-IO, blendermania-addon)
         shell: bash
@@ -48,99 +59,66 @@ jobs:
       - name: Install Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
-      - name: Install Python build deps
+      - name: Install build deps (Linux)
+        if: matrix.platform == 'linux'
         shell: bash
         run: |
+          # patchelf: Nuitka --standalone needs it to rewrite RPATHs on Linux.
+          sudo apt-get update
+          sudo apt-get install -y patchelf
           python -m pip install --upgrade pip
-          python -m pip install pyinstaller numpy
+          python -m pip install nuitka numpy
 
-      - name: Build lzxd_helper.exe (mingw via the windows runner's bundled gcc)
+      - name: Install build deps (Windows)
+        if: matrix.platform == 'windows'
         shell: bash
         run: |
-          # windows-latest ships mingw-w64 at /c/mingw64/bin or via the
-          # rtools/msys64 install. `gcc` should be on PATH.
-          which gcc || { echo "gcc not on PATH" >&2; exit 1; }
-          MSPACK="vendor/libmspack/libmspack/mspack"
-          # Fully static-link the C/C++ runtime so the helper has zero DLL
-          # dependencies. Without these flags mingw produces an exe that
-          # needs libgcc_s_seh-1.dll and libwinpthread-1.dll on PATH —
-          # missing under Wine, the daemon exits before its first read.
-          gcc -O2 -Wall \
-              -static -static-libgcc -static-libstdc++ \
-              -I"$MSPACK" \
-              -o src/lzxd_helper.exe \
-              src/lzxd_helper.c \
-              "$MSPACK/lzxd.c" \
-              "$MSPACK/system.c"
-          ls -la src/lzxd_helper.exe
-          # Sanity: print remaining runtime deps. After --static this should
-          # only list KERNEL32, msvcrt, and similar Win32-side libs.
-          (command -v ldd >/dev/null && ldd src/lzxd_helper.exe) || true
-          (command -v objdump >/dev/null && objdump -p src/lzxd_helper.exe | grep -E "DLL Name") || true
+          # Nuitka uses the runner's MSVC for the app; the mingw `gcc` on PATH
+          # builds the static lzxd_helper.exe (see build_release.sh).
+          python -m pip install --upgrade pip
+          python -m pip install nuitka numpy
 
-      - name: PyInstaller bundle
+      - name: Nuitka build (shared script)
+        shell: bash
+        env:
+          PYTHON: python   # setup-python exposes `python` on every OS
+        run: |
+          chmod +x scripts/build_release.sh
+          scripts/build_release.sh "$PWD/dist-stage"
+
+      - name: Package (Linux tar.gz — preserves exec bits)
+        if: matrix.platform == 'linux'
         shell: bash
         run: |
-          # --onefile: single .exe.
-          # --windowed: no console window. The WinError 6 we hit earlier was
-          #   actually caused by subprocess.DEVNULL — fixed properly in
-          #   src/subproc.py by using stdin=PIPE then immediately closing
-          #   (the lzxd_helper daemon pattern that always worked under Wine).
-          #   So --windowed is safe here; users get a clean GUI and rely on
-          #   the in-app Log tab + forzamania.log file for diagnostics.
-          # --add-binary: ship lzxd_helper.exe inside the bundle (extracted to
-          #   sys._MEIPASS at runtime; lzx.py's helper_path() looks there first).
-          # --add-data: ship vendor/Forza-X360-IO source (read at import time
-          #   by src/fm4/_vendor_setup.py) + scripts/blender_export.py (called
-          #   via subprocess against the user's Blender install).
-          pyinstaller \
-              --clean --noconfirm \
-              --onefile \
-              --windowed \
-              --name forzamania \
-              --paths src \
-              --add-binary "src/lzxd_helper.exe;." \
-              --add-data "vendor/Forza-X360-IO/src/forza_blender;vendor/Forza-X360-IO/src/forza_blender" \
-              --add-data "vendor/blendermania-addon/assets/materials/materials-map-trackmania2020_18122023.json;vendor/blendermania-addon/assets/materials" \
-              --add-data "scripts/blender_export.py;scripts" \
-              --add-data "assets;assets" \
-              --collect-submodules numpy \
-              src/main.py
+          tar -C dist-stage -czf "${PROJECT_NAME}-${{ inputs.version }}-linux.tar.gz" .
 
-      - name: Stage artifacts
-        shell: bash
+      - name: Package (Windows zip)
+        if: matrix.platform == 'windows'
+        shell: pwsh
         run: |
-          mkdir -p dist-stage
-          cp dist/forzamania.exe dist-stage/
-          [ -f README.md ] && cp README.md dist-stage/
-          [ -f LICENSE ] && cp LICENSE dist-stage/
-          # Empty subfolder hint for users to drop NadeoImporter/Blendermania_Dotnet
-          # into if they don't want to use the Download buttons. Same dir the
-          # in-app Download buttons write to (next to forzamania.exe).
-          mkdir -p "dist-stage/tools"
-          echo "Drop NadeoImporter.exe and Blendermania_Dotnet.exe here, or use Settings → Download buttons in the app." > "dist-stage/tools/README.txt"
+          Compress-Archive -Path dist-stage/* -DestinationPath "${env:PROJECT_NAME}-${{ inputs.version }}-windows.zip"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-zip
-          path: dist-stage
+          name: ${{ matrix.platform }}
+          path: |
+            ${{ env.PROJECT_NAME }}-${{ inputs.version }}-linux.tar.gz
+            ${{ env.PROJECT_NAME }}-${{ inputs.version }}-windows.zip
+          if-no-files-found: ignore
 
   release:
-    needs: [build-windows]
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: windows-zip
-          path: windows-zip
-
-      - name: Package
-        run: |
-          (cd windows-zip && zip -r "../${PROJECT_NAME}-${{ inputs.version }}-windows.zip" .)
+          path: artifacts
+          merge-multiple: true
 
       - name: Create release
         env:
@@ -151,7 +129,8 @@ jobs:
             PRERELEASE_FLAG="--prerelease"
           fi
           gh release create "${{ inputs.version }}" \
-              "${PROJECT_NAME}-${{ inputs.version }}-windows.zip" \
+              "artifacts/${PROJECT_NAME}-${{ inputs.version }}-linux.tar.gz" \
+              "artifacts/${PROJECT_NAME}-${{ inputs.version }}-windows.zip" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${{ inputs.version }}" \
               --notes "${{ inputs.notes }}" \
