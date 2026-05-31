@@ -23,7 +23,14 @@ const
   # are required for OUR content (they cancel FORZA_TO_TRACKMANIA's X-mirror +
   # 180° yaw) — the addon's raw formula gave distance-dependent position errors.
   ITEM_POSITION_Y_LIFT* = 8.0
-  DEFAULT_ITEM_ROTATION_X_RAD* = degToRad(90.0)
+  # freeporter's geometry stays Z-up (it reads FBX control points raw, no axis
+  # conversion), but TM2020 is Y-up — so each item needs a -90° PITCH about X to
+  # stand upright. freeporter's map Rotation is (X=Yaw, Y=Pitch, Z=Roll), so this
+  # goes in the Y (pitch) slot, NOT X (yaw — which only spins about vertical and
+  # left items on their side). The placement position is R·center with the SAME
+  # R (-90° about X = (x,y,z)->(x,z,-y)), so the whole map is R applied to the
+  # flawless Blender layout — coherent AND upright.
+  DEFAULT_ITEM_PITCH_RAD* = degToRad(-90.0)
 
   BLOCK_GRID_M* = 32.0
   BLOCK_GRID_Y_OFFSET* = 9   # cells, per addon
@@ -69,12 +76,15 @@ proc chunkToPlacedItem*(itemGbxPath, itemsRelPath: string;
   ## bbox centre in RAW Blender world coords (post FORZA_TO_TRACKMANIA, pre
   ## centering — the value blender_export emits to the .center.json sidecar).
   let (bx, by, bz) = blenderCenter
-  # TM Position = (-Blender_Y, Blender_Z + 8, -Blender_X)
+  # Position = R·center, R = -90° about X: (x,y,z) -> (x, z, -y), so (bx,by,bz)
+  # -> (bx, bz, -by); +8 lift on the TM up-axis (Y). Rotation is (Yaw, Pitch,
+  # Roll) — the -90° is the PITCH (Y slot), matching R, so geometry stands
+  # upright and the map stays coherent.
   PlacedItem(
     name: itemsRelPath,
     itemGbxPath: itemGbxPath,
-    position: (-by, bz + ITEM_POSITION_Y_LIFT, -bx),
-    rotation: (DEFAULT_ITEM_ROTATION_X_RAD, 0.0, 0.0),
+    position: (bx, bz + ITEM_POSITION_Y_LIFT, -by),
+    rotation: (0.0, DEFAULT_ITEM_PITCH_RAD, 0.0),
   )
 
 proc computeGroundBlockGrid*(placedItems: seq[PlacedItem];

@@ -11,7 +11,6 @@
 ## ZIP64 size/offset overflow fields are handled so multi-GB archives (FH1
 ## Colorado) still parse, though the FM4 tracks this targets stay under 4 GB.
 
-import std/os
 import lzx
 
 type

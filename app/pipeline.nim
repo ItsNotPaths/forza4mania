@@ -21,6 +21,20 @@ import x360io, chunker, materials, xml_writers, blender_bridge, nadeo_runner, ma
 
 type LogProc = proc(s: string) {.gcsafe.}
 
+proc samePath*(a, b: string): bool =
+  ## True if a and b refer to the SAME directory/file — robust to trailing
+  ## slashes, `.`/`..` and symlinks (device+inode), not just string equality.
+  ## Critical for the cross-prefix copy guard: if outRoot == the resolved TM
+  ## user dir (they differ only by a trailing slash in practice), a string `!=`
+  ## wrongly triggers the copy, which then copyFile()s every output ONTO ITSELF
+  ## and truncates it to 0 bytes.
+  if a.len == 0 or b.len == 0: return false
+  if a == b: return true
+  try:
+    return sameFile(a, b)               # device+inode — the authoritative check
+  except OSError:
+    return normalizedPath(absolutePath(a)) == normalizedPath(absolutePath(b))
+
 # ---- blender_export.py discovery -----------------------------------------
 
 proc findBlenderExportScript(): string =
@@ -118,13 +132,19 @@ proc copyOutputsToTmPrefix(itemsRoot, outMap, tmUserDir, trackName: string;
       if low.endsWith(suf):
         normalized = nm[0 ..< nm.len - suf.len] & canon; break
     if normalized.len == 0: continue
+    let dst = dstItems / normalized
+    if samePath(src, dst): continue   # already in place — never copyFile onto self (would 0-truncate)
     try:
-      copyFile(src, dstItems / normalized); inc copied
+      copyFile(src, dst); inc copied
     except OSError as e:
       log("[!] copy " & nm & " failed: " & e.msg)
 
+  let dstMap = dstMaps / extractFilename(outMap)
+  if samePath(outMap, dstMap):
+    log("      map already in place (" & dstMap & ")")
+    return
   try:
-    copyFile(outMap, dstMaps / extractFilename(outMap))
+    copyFile(outMap, dstMap)
     log("      copied " & $copied & " item files + map → " & tmUserDir)
     log("      open in TM2020: My Local Maps → Forzamania → " & trackName)
   except OSError as e:
@@ -162,7 +182,7 @@ proc runPipeline*(track: TrackInfo; cfg: Settings; stopAtFbx: bool; log: LogProc
 
   let tmUserDir = resolveTmUserDir(cfg)
   log("      working dir: " & outRoot)
-  if tmUserDir.len > 0 and tmUserDir != outRoot:
+  if tmUserDir.len > 0 and not samePath(tmUserDir, outRoot):
     log("      will copy outputs to TM2020 prefix: " & tmUserDir)
 
   # [1/5] read FM4 ---------------------------------------------------------
@@ -308,5 +328,5 @@ proc runPipeline*(track: TrackInfo; cfg: Settings; stopAtFbx: bool; log: LogProc
     return
 
   # Cross-prefix copy ------------------------------------------------------
-  if tmUserDir.len > 0 and tmUserDir != outRoot:
+  if tmUserDir.len > 0 and not samePath(tmUserDir, outRoot):
     copyOutputsToTmPrefix(itemsRoot, outMap, tmUserDir, track.name, log)

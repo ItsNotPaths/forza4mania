@@ -13,7 +13,7 @@
 ## blob maps to host memory directly via `copyMem`; if a big-endian target is
 ## ever added this is the one place that would need byte-swapping.
 
-import std/[json, tables, os, strutils]
+import std/[json, tables, os]
 
 # Must match patches/x360io_cli.py's _MANIFEST_VERSION (and src/fm4/reader.py).
 const MANIFEST_VERSION* = 2

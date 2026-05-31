@@ -300,13 +300,17 @@ def main() -> int:
     center_path = out_fbx_path.with_suffix(".center.json")
     center_path.write_text(json.dumps({"center": list(world_center)}))
 
-    # FBX export args MATCH blendermania-addon/utils/ItemsExport.py:250-256
-    # EXACTLY. That addon's FBX→NadeoImporter path is proven-good; our
-    # earlier custom arg set (explicit axis_forward/axis_up, apply_unit_scale
-    # =True, FBX_SCALE_NONE, object_types filter, etc.) drifted from it and
-    # produced items with subtly-wrong rotation in-game. Everything not
-    # listed here intentionally uses Blender's export defaults — same as
-    # the addon. `use_selection=True` needs the object selected first.
+    # SCALE FIX: cm-aware importers (freeporter / NadeoImporter) read the FBX's
+    # UnitScaleFactor and divide positions by 100 for a cm file. With Blender's
+    # default export (UnitScaleFactor=1.0 = "1 cm/unit") our metre-valued verts
+    # get read as centimetres → items come in 100x too small. apply_scale_options
+    # ='FBX_SCALE_UNITS' writes UnitScaleFactor=100 (= "1 m/unit") WITHOUT
+    # changing the vertex values, so the importer's unit normalisation lands back
+    # on metres (verified: freeporter unit_meters = 100/100 = 1.0). It only
+    # affects UnitScaleFactor — NOT axes — so the rotation/orientation is
+    # unchanged (the earlier "wrong rotation" came from also overriding
+    # axis_forward/axis_up, which we deliberately leave at the addon defaults).
+    # `use_selection=True` needs the object selected first.
     for o in bpy.context.scene.objects:
         o.select_set(False)
     obj.select_set(True)
@@ -316,6 +320,7 @@ def main() -> int:
         use_selection=True,
         use_custom_props=True,
         apply_unit_scale=False,
+        apply_scale_options='FBX_SCALE_UNITS',
     )
 
     print(

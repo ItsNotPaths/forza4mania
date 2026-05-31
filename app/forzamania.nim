@@ -27,6 +27,7 @@ var
   gSettingsStatus: ptr Label
   gDownloadBtn: ptr Button    # Settings → Download freeporter (wired in main)
   gLog: ptr Code
+  gLogBuffer: string          # plain-text mirror of the Log tab, for "Save log"
 
 # Export runs on a worker thread (luigi isn't thread-safe). The worker streams
 # log lines through a channel; the UI thread drains it — woken by a thread-safe
@@ -68,8 +69,10 @@ proc setText(tb: ptr Textbox; s: string) =
   elementRefresh(addr tb.e)
 
 proc logLine(line: string) =
-  ## Append one line to the Log tab. (Phase 2 will route worker-thread output
-  ## here via a channel; for now everything runs on the UI thread.)
+  ## Append one line to the Log tab + the plain-text mirror (gLogBuffer) the
+  ## "Save log" button writes out. Always called on the UI thread (worker output
+  ## arrives via the channel and is drained here), so gLogBuffer needs no lock.
+  gLogBuffer.add(line & "\n")
   if gLog != nil:
     codeInsertContent(gLog, (line & "\n").cstring, -1, false)
     elementRefresh(addr gLog.e)
@@ -349,8 +352,24 @@ proc buildConvertTab(tab: ptr Element) =
 
 # ---- Log tab -------------------------------------------------------------
 
+proc logFilePath(): string = getAppDir() / "forzamania.log"
+
+proc onSaveLog(cp: pointer) {.cdecl.} =
+  ## Overwrite <appdir>/forzamania.log with the current log contents. Simpler
+  ## than in-widget text selection/copy — click, then open the file.
+  let path = logFilePath()
+  try:
+    writeFile(path, gLogBuffer)
+    logLine("[log] saved → " & path)
+  except CatchableError as e:
+    logLine("[log] save failed: " & e.msg)
+
 proc buildLogTab(tab: ptr Element) =
-  let p = panelCreate(tab, PANEL_EXPAND or ELEMENT_V_FILL or ELEMENT_H_FILL)
+  let p = panelCreate(tab, PANEL_GRAY or PANEL_MEDIUM_SPACING or
+                           ELEMENT_V_FILL or ELEMENT_H_FILL)
+  let top = panelCreate(addr p.e, PANEL_HORIZONTAL or ELEMENT_H_FILL)
+  (buttonCreate(addr top.e, 0, "Save log", -1)).invoke = onSaveLog
+  discard labelCreate(addr top.e, 0, "→ forzamania.log (beside the executable)", -1)
   gLog = codeCreate(addr p.e, ELEMENT_V_FILL or ELEMENT_H_FILL)
 
 # ---- assembly ------------------------------------------------------------

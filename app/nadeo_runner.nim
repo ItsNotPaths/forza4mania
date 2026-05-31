@@ -29,9 +29,9 @@ proc ok*(r: ImporterResult): bool = r.returncode == 0
 proc findFreeporter*(override = ""): string =
   ## Locate the nadeo-freeporter binary: override (Settings) → <appdir>/tools/
   ## <platform binary>. Raises if not found.
-  if override.len > 0:
-    if not fileExists(override):
-      raise newException(IOError, "freeporter override does not exist: " & override)
+  # A configured override wins ONLY if it still exists; a stale/moved one falls
+  # through to the bundled-tools search rather than hard-failing.
+  if override.len > 0 and fileExists(override):
     return override
   let cand = getAppDir() / "tools" / freeporterName
   if fileExists(cand): return cand

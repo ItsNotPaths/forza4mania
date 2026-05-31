@@ -19,9 +19,10 @@ proc findX360io*(override = ""): seq[string] =
   ##   1. explicit override (Settings → x360io path)
   ##   2. <appdir>/tools/x360io[.exe]  or  <appdir>/tools/x360io/x360io[.exe]
   ##   3. dev fallback: [python3, <repo>/patches/x360io_cli.py]
-  if override.len > 0:
-    if not fileExists(override):
-      raise newException(IOError, "x360io override does not exist: " & override)
+  # A configured override wins ONLY if it still exists. A stale one (e.g. a
+  # settings path from the old tools/x360io/x360io dist-dir layout, or a moved
+  # bundle) falls through to the search below instead of hard-failing.
+  if override.len > 0 and fileExists(override):
     return @[override]
 
   let tools = getAppDir() / "tools"

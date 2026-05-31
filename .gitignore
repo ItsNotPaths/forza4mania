@@ -7,9 +7,9 @@ build/
 dist/
 *.egg-info/
 
-# compiled lzxd_helper (built by release.sh from src/lzxd_helper.c)
-src/lzxd_helper
-src/lzxd_helper.exe
+# compiled lzxd_helper (built by release.sh from scripts/lzxd_helper.c)
+scripts/lzxd_helper
+scripts/lzxd_helper.exe
 *.o
 *.so
 *.dylib

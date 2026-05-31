@@ -148,6 +148,25 @@ proc detectTmUserDir(tmInstall: string): string =
     if dirExists(c): return c
   return ""
 
+proc detectBundledTool(names: varargs[string]): string =
+  ## Find a runtime CLI the release bundle ships under <appdir>/tools/. Tries
+  ## each candidate path (relative to tools/) so both layouts work: a single
+  ## onefile binary (tools/x360io) and a Nuitka --standalone dist dir
+  ## (tools/x360io/x360io). Returns "" if none (e.g. a dev build with no tools/).
+  let tools = getAppDir() / "tools"
+  for n in names:
+    let cand = tools / n
+    if fileExists(cand): return cand
+  return ""
+
+proc detectX360io(): string =
+  let exe = when defined(windows): "x360io.exe" else: "x360io"
+  detectBundledTool(exe, "x360io" / exe)
+
+proc detectFreeporter(): string =
+  let exe = when defined(windows): "nadeo-freeporter.exe" else: "nadeo-freeporter"
+  detectBundledTool(exe)
+
 proc autodetect*(s: var Settings) =
   ## Best-effort probe; only fills BLANK fields (never overwrites a user value).
   if s.blenderPath.len == 0:   s.blenderPath = detectBlender()
@@ -155,6 +174,10 @@ proc autodetect*(s: var Settings) =
   if s.tmUserDir.len == 0 and s.tmInstallDir.len > 0:
     s.tmUserDir = detectTmUserDir(s.tmInstallDir)
   if s.fm4InstallDir.len == 0: s.fm4InstallDir = firstExisting(fm4Guesses)
+  # Runtime CLIs shipped in the release bundle's tools/ dir. (Dev builds have no
+  # tools/ → these stay blank and the runner's own search/dev-fallback kicks in.)
+  if s.x360ioPath.len == 0:         s.x360ioPath = detectX360io()
+  if s.nadeoImporterPath.len == 0:  s.nadeoImporterPath = detectFreeporter()
 
 # ---- load / save ---------------------------------------------------------
 
